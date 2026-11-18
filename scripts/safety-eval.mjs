@@ -13,8 +13,11 @@
 //                in Rust).
 //   D.e2e.*      the real scripts refuse mutants end to end: build-web on a
 //                mutant web tree and on an engine with a local path,
-//                check-wasm on that engine, check-unsafe on a mutant Rust
-//                tree. All under target/safety-eval/; dist/ is never touched.
+//                check-wasm on that engine, check-wasm's random native-vs-
+//                WASM diff on a loader mutant (skipped when the engine or
+//                the release api_bridge is not built), check-unsafe on a
+//                mutant Rust tree. All under target/safety-eval/; dist/ is
+//                never touched.
 //   D.dist.*     when dist/ exists: no built file (and not the engine inside
 //                the single file) contains a local path of this machine, and
 //                the built JS passes the script rules.
@@ -27,7 +30,7 @@ import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
-import { CARGO_HOME, ROOT, findLocalPath } from "./lib/local-paths.mjs";
+import { CARGO_HOME, ENGINE_WASM, ROOT, findLocalPath } from "./lib/local-paths.mjs";
 import { forbidRootProblems, rustSourceProblems, wasmRootProblems } from "./lib/rust-hygiene.mjs";
 import { JS_BANS, lineEndingProblems, scriptProblems, styleProblems, templateProblems, TOKENS_FILE } from "./lib/web-hygiene.mjs";
 
@@ -261,6 +264,26 @@ mkdirSync(WORK, { recursive: true });
 
   const r3 = node(["scripts/check-wasm.mjs", "--wasm", leaky, "--no-build"]);
   check("D.e2e.check-wasm-refuses-engine-with-local-path", r3.status === 1 && /local path/.test(r3.out), lastLine(r3.out));
+}
+{
+  // The random native-vs-WASM diff catches a loader that answers differently
+  // from native: this mutant cuts every byte-path request at 64 KiB, so the
+  // cap+1 edges stop being request_too_large on the WASM side only.
+  const bridge = join(ROOT, "target", "release", "examples", "api_bridge" + (process.platform === "win32" ? ".exe" : ""));
+  if (!existsSync(bridge) || !existsSync(ENGINE_WASM)) {
+    skip("D.e2e.check-wasm-random-diff-catches-loader-mutant", "needs target/engine/engine.wasm and the release api_bridge (run check-wasm first)");
+  } else {
+    const loader = read(join(WEB, "src/core/engine-web.js"));
+    const mutant = loader.replace("return invoke(opBytes, reqBytes);", "return invoke(opBytes, reqBytes.subarray(0, 65536));");
+    const mutantPath = join(WORK, "engine-web-mutant.js");
+    writeFileSync(mutantPath, mutant);
+    const r = node(["scripts/check-wasm.mjs", "--no-build", "--wasm", ENGINE_WASM, "--loader", mutantPath, "--random", "2000"]);
+    check(
+      "D.e2e.check-wasm-random-diff-catches-loader-mutant",
+      mutant !== loader && r.status === 1 && /random #\d+ \(cap-edge[^)]*\) native\/wasm differ/.test(r.out),
+      (r.out.match(/random: [^\n]*mismatches \d+/) || [lastLine(r.out)])[0]
+    );
+  }
 }
 {
   const webCopy = join(WORK, "web-mutant");

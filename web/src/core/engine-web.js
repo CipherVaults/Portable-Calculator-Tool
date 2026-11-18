@@ -9,6 +9,14 @@
 // before compiling. memory.buffer is re-read after every export call because
 // the memory may grow. A trap re-instantiates the module on the next call
 // and answers this one with the `internal` envelope.
+//
+// create() rejects with an Error whose `code` says why, so the boot can tell
+// an unsupported browser from a damaged download:
+//   "no_wasm"      WebAssembly is missing (old browser, Lockdown Mode, policy)
+//   "no_crypto"    crypto.subtle is missing (not a secure context)
+//   "integrity"    the bytes do not have the expected SHA-256
+//   "instantiate"  compiling or instantiating failed, or the module is not ours
+// The engine it resolves to carries `sha256`, the hash it verified.
 (function () {
   "use strict";
   const ABI_VERSION = 1;
@@ -18,6 +26,12 @@
   const TOO_LARGE = envelope("request_too_large", "Request is too large.");
   const UNKNOWN_OP = envelope("unknown_op", "Unknown operation.");
   const INVALID = envelope("invalid_request", "Invalid request.");
+
+  function failure(code, message) {
+    const err = new Error(message);
+    err.code = code;
+    return err;
+  }
 
   async function sha256Hex(bytes) {
     const digest = await crypto.subtle.digest("SHA-256", bytes);
@@ -35,16 +49,26 @@
     return e;
   }
 
-  // Resolves to {call(op, req) -> Promise<envelope string>}, or rejects when
+  // Resolves to {call(op, req), callBytes(opBytes, reqBytes), sha256}; both
+  // calls resolve to the envelope string. Rejects (see the codes above) when
   // WebAssembly is missing, the hash differs or the module is not ours.
   async function create(bytes, expectedSha256Hex) {
     if (typeof WebAssembly !== "object" || WebAssembly === null) {
-      throw new Error("WebAssembly is not available");
+      throw failure("no_wasm", "WebAssembly is not available");
+    }
+    if (typeof crypto !== "object" || crypto === null || !crypto.subtle) {
+      throw failure("no_crypto", "crypto.subtle is not available");
     }
     const actual = await sha256Hex(bytes);
-    if (actual !== expectedSha256Hex) throw new Error("engine integrity check failed");
-    const module = await WebAssembly.compile(bytes);
-    let exports = await instantiate(module);
+    if (actual !== expectedSha256Hex) throw failure("integrity", "engine integrity check failed");
+    let module;
+    let exports;
+    try {
+      module = await WebAssembly.compile(bytes);
+      exports = await instantiate(module);
+    } catch (err) {
+      throw failure("instantiate", "engine did not start: " + (err && err.message ? err.message : "unknown"));
+    }
     const encoder = new TextEncoder();
     const decoder = new TextDecoder("utf-8");
 
@@ -63,9 +87,8 @@
       return decoder.decode(output);
     }
 
-    function callNow(e, op, req) {
-      const opBytes = encoder.encode(op);
-      const answer = run(e, opBytes, encoder.encode(req));
+    function callNow(e, opBytes, reqBytes) {
+      const answer = run(e, opBytes, reqBytes);
       if (answer !== null) return answer;
       // pc_in refused before any op lookup. Keep pcalc-api's order of
       // checks (unknown_op first): ask the engine about the op alone. Every
@@ -77,18 +100,30 @@
       return probe === UNKNOWN_OP ? UNKNOWN_OP : TOO_LARGE;
     }
 
-    async function call(op, req) {
-      if (typeof op !== "string" || typeof req !== "string") return INVALID;
+    async function invoke(opBytes, reqBytes) {
       try {
         if (exports === null) exports = await instantiate(module);
-        return callNow(exports, op, req);
+        return callNow(exports, opBytes, reqBytes);
       } catch (_) {
         exports = null;
         return INTERNAL;
       }
     }
 
-    return Object.freeze({ call });
+    // The app's entry point: JS strings, encoded as UTF-8.
+    async function call(op, req) {
+      if (typeof op !== "string" || typeof req !== "string") return INVALID;
+      return invoke(encoder.encode(op), encoder.encode(req));
+    }
+
+    // Raw bytes, for bytes a JS string cannot hold (invalid UTF-8). The same
+    // path as call(); scripts/check-wasm.mjs diffs it against native.
+    async function callBytes(opBytes, reqBytes) {
+      if (!(opBytes instanceof Uint8Array) || !(reqBytes instanceof Uint8Array)) return INVALID;
+      return invoke(opBytes, reqBytes);
+    }
+
+    return Object.freeze({ call, callBytes, sha256: actual });
   }
 
   window.PCalc.engineWeb = Object.freeze({ create, sha256Hex, ABI_VERSION });
