@@ -27,6 +27,6 @@
 
 ## Operational orientation
 
-- Current phase: **M0 done (E-01 to E-03); M1 done locally (E-04); M2a done locally (E-05: phone-first shell, theme and i18n infrastructure, store validators, desktop and IndexedDB stores, service worker with the upgrade test; WebKit/Gecko stay manual); M1/M2a review fixes done locally (E-06; phone one-handed reach awaits the owner before M5b); M2b (Date port) next**. Live operational source: the working tree and `git log` on `dev`.
+- Current phase: **M0 done (E-01 to E-03); M1 done locally (E-04); M2a done locally (E-05: phone-first shell, theme and i18n infrastructure, store validators, desktop and IndexedDB stores, service worker with the upgrade test; WebKit/Gecko stay manual); M1/M2a review fixes done locally (E-06); phone bottom bar below 760 px done locally (E-07: ☰ Menu, quick switch, History in thumb reach); M2b (Date port) next**. Live operational source: the working tree and `git log` on `dev`.
 - Source/owner map: [SOURCE_OWNERSHIP_MAP.md](SOURCE_OWNERSHIP_MAP.md).
 - Unaccepted work pointer: [CONTINUATION_STATE.md](CONTINUATION_STATE.md).
