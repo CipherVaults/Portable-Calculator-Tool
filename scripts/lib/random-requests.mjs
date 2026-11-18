@@ -19,13 +19,18 @@
 //   percent        180  every percent op with random number tokens
 //                       (exponents, -0, 1e400, leading zeros, strings, null)
 //   meta            40  meta.versions with random bodies
+//   store           70  the four store validators (settings, state, history,
+//                       countdowns): a valid document, typed or value-level
+//                       mutations of one, a newer schemaVersion, or another
+//                       document's body
 //   unknown-op      80  near-miss, long, empty and non-ASCII op names
 //   malformed      110  text-level damage: truncation, junk, duplicate keys,
 //                       deep nesting, lone-surrogate escapes, raw controls
 //   invalid-utf8    80  invalid UTF-8 inside requests and op names
 //   unicode         60  valid non-ASCII text in string fields
 // plus a fixed block of cap edges: every known op and two unknown ones at
-// cap-1, cap and cap+1 bytes, each as padded JSON, ASCII junk and 0xFF.
+// cap-1, cap and cap+1 bytes (each op's own cap: 64 KiB engine ops, 256 KiB
+// and 4.5 MiB store validators), each as padded JSON, ASCII junk and 0xFF.
 import { isUtf8 } from "node:buffer";
 
 export function mulberry32(seed) {
@@ -53,11 +58,38 @@ const WEIGHTS = [
   ["date-cross", 70],
   ["percent", 180],
   ["meta", 40],
+  ["store", 70],
   ["unknown-op", 80],
   ["malformed", 110],
   ["invalid-utf8", 80],
   ["unicode", 60]
 ];
+
+// Valid M2a store documents (crates/pcalc-api/src/store.rs); the store
+// kind sends them as they are, mutated, or to another validator.
+export const STORE_DOCS = {
+  "settings.validate": {
+    schemaVersion: 1, checkUpdatesOnStartup: false, history: { enabled: true }, display: { grouping: "comma" },
+    calculator: { angleUnit: "deg", wordSize: "qword", base: "dec", shiftMode: "arithmetic" },
+    date: { firstDayOfWeek: "monday", calendar: { weekend: [5, 6], preset: "eg", hijriOffsetDays: 1 },
+      cardOrder: ["between", "add", "business", "age", "info", "countdown"], collapsedCards: ["age"] },
+    percent: { cardOrder: ["change", "percent", "what", "discount", "base", "markup", "tax", "tip"], collapsedCards: [] },
+    appearance: { theme: "retro" }, language: { code: "ar", digits: "arabic-indic" }
+  },
+  "state.validate": { schemaVersion: 1, route: "converter/length", pane: { open: true, tab: "countdowns" }, dev: { pseudoLocale: "ar-XB" } },
+  "history.validate": {
+    schemaVersion: 1,
+    entries: [
+      { id: "h-1795400000000-0", timestampMs: 1795400000000, tool: "standard", calculator: "standard", calculatorLabel: "Standard",
+        inputs: { expr: [{ n: "2" }, { op: "+" }, { n: "2" }], angleUnit: "deg", mode: "standard" }, expressionText: "2 + 2", inputsText: "",
+        resultText: "4", copyText: "2 + 2 = 4", pinned: true, note: "عيد", engine: "calc-core 0.1.0" }
+    ]
+  },
+  "countdowns.validate": {
+    schemaVersion: 1,
+    items: [{ id: "c-1", label: "New year", targetDate: "2026-12-31", targetTime: "09:00", createdAtMs: 1, savedAtMs: 2, finishedSeenAtMs: null }]
+  }
+};
 
 // Field names of the percent ops (crates/pcalc-api/src/percent.rs).
 export const PERCENT_FIELDS = {
@@ -269,7 +301,7 @@ export function randomRequests({ seed, count, knownOps, capOf, dateSeeds }) {
   const clone = (v) => JSON.parse(JSON.stringify(v));
 
   // Fixed block: cap edges for every op.
-  const capOps = [...knownOps, "history.validate", "nope"];
+  const capOps = [...knownOps, "history.import_preview", "nope"];
   for (const op of capOps) {
     const cap = capOf(op);
     const sample = parsedSeeds.find((s) => s.op === op);
@@ -329,6 +361,26 @@ export function randomRequests({ seed, count, knownOps, capOf, dateSeeds }) {
         push(kind, op, r.chance(0.05) ? `[${body.replace(/"[A-Za-z]+":/g, "")}]` : `{${body}}`);
         break;
       }
+      case "store": {
+        const ops = Object.keys(STORE_DOCS);
+        const own = r.pick(ops);
+        const value = clone(STORE_DOCS[r.chance(0.85) ? own : r.pick(ops)]);
+        const roll = r.int(10);
+        let text;
+        if (roll < 2) text = JSON.stringify(value);
+        else if (roll < 5) text = JSON.stringify(typedMutate(r, value, null, pools));
+        else if (roll < 9) {
+          const n = r.range(1, 3);
+          for (let i = 0; i < n; i++) mutateValue(r, value, pools);
+          text = JSON.stringify(value);
+          if (r.chance(0.2)) text = swapNumberToken(r, text);
+        } else {
+          value.schemaVersion = r.pick([0, 2, 3, 99, -1, 1.5, "1", null, 2 ** 64]);
+          text = JSON.stringify(value);
+        }
+        push(kind, r.chance(0.95) ? own : r.pick(knownOps), text);
+        break;
+      }
       case "meta": {
         push(kind, "meta.versions", r.pick(["{}", " {} ", "{ }\n", '{"x":1}', "[]", "", "null", "{}{}", '{"api":1}', "{", "\u00a0{}", "\ufeff{}"]));
         break;
@@ -348,7 +400,7 @@ export function randomRequests({ seed, count, knownOps, capOf, dateSeeds }) {
           "." + known.split(".")[1],
           "calc_" + known.split(".")[1],
           "calc.press",
-          "history.validate",
+          "history.import_preview",
           "legacy.preview",
           "units.convert",
           "",

@@ -29,9 +29,10 @@
 //! | `meta.versions` | `{api, app, engines}` |
 //! | `date.days_between`, `date.add_subtract`, `date.business_days`, `date.age`, `date.date_info`, `date.countdown`, `date.holidays_in_range`, `date.month_grid`, `date.validate_calendar` | `date_core::api` (byte-identical to the Date app) |
 //! | `percent.change`, `percent.percent`, `percent.what`, `percent.discount`, `percent.base`, `percent.markup`, `percent.tax`, `percent.tip` | `percent_core`, normalised to the envelope |
+//! | `settings.validate`, `state.validate`, `history.validate`, `countdowns.validate` | [`store`]: the stored document's raw text in, `ok` / `newer` / `invalid_request` out (M2a) |
 //!
-//! The calculator, converter, graph, store-validation ops arrive with their
-//! milestones; until then they are `unknown_op`.
+//! The calculator, converter and graph ops arrive with their milestones;
+//! until then they are `unknown_op`.
 //!
 //! # Guarantees
 //!
@@ -44,6 +45,7 @@ mod envelope;
 mod meta;
 mod op;
 mod percent;
+pub mod store;
 
 pub use envelope::{ApiError, ErrorEnvelope};
 pub use op::{Op, PercentOp};
@@ -95,6 +97,7 @@ pub fn call_bytes(op: &[u8], req: &[u8]) -> String {
         Op::MetaVersions => meta::versions(req),
         Op::Date(date_op) => date::run(date_op, req),
         Op::Percent(percent_op) => percent::run(percent_op, req),
+        Op::Validate(doc) => store::run(doc, req),
     }
 }
 
@@ -123,6 +126,8 @@ mod tests {
             "date.days_between ",
             "calc.press",
             "legacy.preview",
+            "settings.validate ",
+            "settings",
         ] {
             assert_eq!(call(op, DAYS), unknown, "op {op:?}");
         }
@@ -154,7 +159,12 @@ mod tests {
             too_large
         );
         for op in Op::ALL {
-            assert_eq!(op.request_cap(), CAP_ENGINE, "{}", op.name());
+            let want = match op.name() {
+                "history.validate" => CAP_HISTORY_VALIDATE,
+                n if n.ends_with(".validate") => CAP_STORE,
+                _ => CAP_ENGINE,
+            };
+            assert_eq!(op.request_cap(), want, "{}", op.name());
         }
         const { assert!(CAP_ENGINE < CAP_STORE && CAP_STORE < CAP_HISTORY_VALIDATE) };
         const { assert!(CAP_HISTORY_VALIDATE < CAP_IMPORT && CAP_IMPORT == MAX_REQUEST_BYTES) };
@@ -194,7 +204,7 @@ mod tests {
         // An unknown op stays unknown_op at every size, as on WASM.
         for len in [0, CAP_ENGINE, CAP_ENGINE + 1, MAX_REQUEST_BYTES + 1] {
             assert_eq!(
-                call_bytes(b"history.validate", &vec![b' '; len]),
+                call_bytes(b"history.import_preview", &vec![b' '; len]),
                 ApiError::UNKNOWN_OP.to_json()
             );
         }

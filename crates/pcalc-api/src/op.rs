@@ -2,7 +2,8 @@
 
 use date_core::api::Op as DateOp;
 
-use crate::{CAP_ENGINE, MAX_OP_BYTES};
+use crate::store::Doc;
+use crate::{CAP_ENGINE, CAP_HISTORY_VALIDATE, CAP_STORE, MAX_OP_BYTES};
 
 /// A percentage calculator (PCT v2.3.0's eight cards).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -34,10 +35,13 @@ pub enum Op {
     Date(DateOp),
     /// A `percent.*` op.
     Percent(PercentOp),
+    /// A store validator: `settings.validate`, `state.validate`,
+    /// `history.validate`, `countdowns.validate` (plan B10, B11).
+    Validate(Doc),
 }
 
 /// `(name, op)` for every op, in documentation order.
-const TABLE: [(&str, Op); 18] = [
+const TABLE: [(&str, Op); 22] = [
     ("meta.versions", Op::MetaVersions),
     ("date.days_between", Op::Date(DateOp::CalcDaysBetween)),
     ("date.add_subtract", Op::Date(DateOp::CalcAddSubtract)),
@@ -56,12 +60,16 @@ const TABLE: [(&str, Op); 18] = [
     ("percent.markup", Op::Percent(PercentOp::Markup)),
     ("percent.tax", Op::Percent(PercentOp::Tax)),
     ("percent.tip", Op::Percent(PercentOp::Tip)),
+    ("settings.validate", Op::Validate(Doc::Settings)),
+    ("state.validate", Op::Validate(Doc::State)),
+    ("history.validate", Op::Validate(Doc::History)),
+    ("countdowns.validate", Op::Validate(Doc::Countdowns)),
 ];
 
 impl Op {
     /// Every op, in documentation order.
-    pub const ALL: [Op; 18] = {
-        let mut all = [Op::MetaVersions; 18];
+    pub const ALL: [Op; 22] = {
+        let mut all = [Op::MetaVersions; 22];
         let mut i = 0;
         while i < TABLE.len() {
             all[i] = TABLE[i].1;
@@ -96,19 +104,21 @@ impl Op {
     /// | Ops | Cap |
     /// |---|---|
     /// | `meta.*`, `date.*`, `percent.*` (and later `calc`, `prog`, `units`, `graph`) | [`CAP_ENGINE`] (64 KiB) |
-    /// | `settings.validate`, `state.validate`, `countdowns.validate` (M3) | [`crate::CAP_STORE`] (256 KiB) |
-    /// | `history.validate` (M3) | [`crate::CAP_HISTORY_VALIDATE`] (4.5 MiB) |
+    /// | `settings.validate`, `state.validate`, `countdowns.validate` | [`CAP_STORE`] (256 KiB) |
+    /// | `history.validate` | [`CAP_HISTORY_VALIDATE`] (4.5 MiB) |
     /// | `history.import_preview` (M3) | [`crate::CAP_IMPORT`] (8 MiB) |
     ///
-    /// Every op that exists in M1 is an engine op; the larger caps attach
-    /// here when their ops arrive (`legacy.preview` was dropped with the
-    /// owner's "no legacy migration"). The match is exhaustive, so a new op
-    /// cannot compile without a cap.
+    /// The store validators arrived in M2a; the import cap attaches when
+    /// its op arrives (`legacy.preview` was dropped with the owner's "no
+    /// legacy migration"). The match is exhaustive, so a new op cannot
+    /// compile without a cap.
     pub const fn request_cap(self) -> usize {
         match self {
             Op::MetaVersions => CAP_ENGINE,
             Op::Date(_) => CAP_ENGINE,
             Op::Percent(_) => CAP_ENGINE,
+            Op::Validate(Doc::History) => CAP_HISTORY_VALIDATE,
+            Op::Validate(Doc::Settings | Doc::State | Doc::Countdowns) => CAP_STORE,
         }
     }
 }

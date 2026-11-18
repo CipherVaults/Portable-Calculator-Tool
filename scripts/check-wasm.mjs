@@ -69,6 +69,11 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = fileURLToPath(import.meta.url);
 const TIME_ZONES = ["UTC", "America/New_York", "Africa/Cairo"];
 const CAP_ENGINE = 64 * 1024;
+const CAP_STORE = 256 * 1024;
+const CAP_HISTORY_VALIDATE = 4 * 1024 * 1024 + 512 * 1024;
+// Plan B2's per-op caps (pcalc-api's Op::request_cap; its tests pin every
+// op, and the cap edges of the random diff re-prove them byte for byte).
+const capOf = (op) => (op === "history.validate" ? CAP_HISTORY_VALIDATE : /^[a-z]+\.validate$/.test(op) ? CAP_STORE : CAP_ENGINE);
 // pcalc_wasm::MAX_INPUT_BYTES: MAX_OP_BYTES (64) + MAX_REQUEST_BYTES (8 MiB).
 const MAX_INPUT_BYTES = 64 + 8 * 1024 * 1024;
 const BRIDGE_BUILD = ["build", "--release", "--locked", "-p", "pcalc-api", "-p", "date-core", "-p", "percent-core", "--examples"];
@@ -399,9 +404,6 @@ async function child(opts) {
 async function randomDiff(opts, engine, apiBridge, dateCasesList, report) {
   if (opts.random === 0) return { count: 0, seed: opts.seed, mismatches: 0, digest: "" };
   const ops = knownOps();
-  // Every op that exists today has the 64 KiB engine cap (plan B2; the
-  // pcalc-api tests pin it per op, and the cap edges below re-prove it).
-  const capOf = () => CAP_ENGINE;
   const started = performance.now();
   const cases = randomRequests({
     seed: opts.seed,
@@ -458,7 +460,7 @@ async function randomDiff(opts, engine, apiBridge, dateCasesList, report) {
       // Unknown ops: unknown_op at every size. Known ops: request_too_large
       // past the cap; at or under it the request is parsed (junk and 0xFF
       // are invalid_request, padded JSON is whatever the op answers).
-      const want = !isKnown ? "unknown_op" : c.req.length > CAP_ENGINE ? "request_too_large" : c.req[0] === 0x7b ? null : "invalid_request";
+      const want = !isKnown ? "unknown_op" : c.req.length > capOf(opText) ? "request_too_large" : c.req[0] === 0x7b ? null : "invalid_request";
       const wrong = want ? code !== want : code === "request_too_large" || code === "unknown_op";
       if (wrong) report(`cap edge ${opText} ${c.req.length} B (first byte ${c.req[0]}): ${code}, want ${want || "parsed (not too large)"}`);
     }

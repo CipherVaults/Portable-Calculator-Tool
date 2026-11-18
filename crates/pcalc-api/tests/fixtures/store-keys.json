@@ -1,0 +1,78 @@
+{
+  "_comment": "Frozen key paths of every stored document per schemaVersion (pcalc-api store tests). Change a field set only together with a schemaVersion bump (AGENTS.md).",
+  "settings": {
+    "schemaVersion": 1,
+    "keys": [
+      "appearance",
+      "appearance.theme",
+      "calculator",
+      "calculator.angleUnit",
+      "calculator.base",
+      "calculator.shiftMode",
+      "calculator.wordSize",
+      "checkUpdatesOnStartup",
+      "date",
+      "date.calendar",
+      "date.cardOrder",
+      "date.collapsedCards",
+      "date.firstDayOfWeek",
+      "display",
+      "display.grouping",
+      "history",
+      "history.enabled",
+      "language",
+      "language.code",
+      "language.digits",
+      "percent",
+      "percent.cardOrder",
+      "percent.collapsedCards",
+      "schemaVersion"
+    ]
+  },
+  "state": {
+    "schemaVersion": 1,
+    "keys": [
+      "dev",
+      "dev.pseudoLocale",
+      "pane",
+      "pane.open",
+      "pane.tab",
+      "route",
+      "schemaVersion"
+    ]
+  },
+  "history": {
+    "schemaVersion": 1,
+    "keys": [
+      "entries",
+      "entries[].calculator",
+      "entries[].calculatorLabel",
+      "entries[].copyText",
+      "entries[].engine",
+      "entries[].expressionText",
+      "entries[].id",
+      "entries[].inputs",
+      "entries[].inputsText",
+      "entries[].note",
+      "entries[].pinned",
+      "entries[].resultText",
+      "entries[].timestampMs",
+      "entries[].tool",
+      "schemaVersion"
+    ]
+  },
+  "countdowns": {
+    "schemaVersion": 1,
+    "keys": [
+      "items",
+      "items[].createdAtMs",
+      "items[].finishedSeenAtMs",
+      "items[].id",
+      "items[].label",
+      "items[].savedAtMs",
+      "items[].targetDate",
+      "items[].targetTime",
+      "schemaVersion"
+    ]
+  }
+}
