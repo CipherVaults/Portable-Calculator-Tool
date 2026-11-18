@@ -48,6 +48,11 @@ const SINGLE_NAME = "Portable-Calculator-Tool-Mobile.html";
 const WASM_BUDGET = 1_500_000; // plan B3: <= 1.5 MB
 const SINGLE_BUDGET = 2_000_000; // plan B3: <= 2 MB
 
+// An empty data: icon, so browsers do not request /favicon.ico from the
+// site root (a 404 outside the app on Pages) before the real icons arrive
+// with the web manifest (M2a). img-src allows data: in both web CSPs.
+const NO_FAVICON = '<link rel="icon" href="data:,">';
+
 // The Pages CSP of plan B3, verbatim (no frame-ancestors in a meta CSP).
 const WEB_CSP = [
   "default-src 'none'",
@@ -230,6 +235,8 @@ function main() {
     const dir = join(DIST, "desktop");
     const html = render(template, {
       CSP_META: "",
+      // The desktop webview asks for no favicon; its CSP has no data: images.
+      ICON: "",
       STYLES: `<link rel="stylesheet" href="${cssName}">`,
       APP_VERSION: manifest.appVersion,
       ENGINE_DATA: "",
@@ -271,6 +278,7 @@ function main() {
       const dir = join(DIST, "web");
       const html = render(template, {
         CSP_META: `<meta http-equiv="Content-Security-Policy" content="${WEB_CSP}">`,
+        ICON: NO_FAVICON,
         STYLES: `<link rel="stylesheet" href="${cssName}">`,
         APP_VERSION: manifest.appVersion,
         ENGINE_DATA: "",
@@ -302,6 +310,7 @@ function main() {
       ].join("; ");
       const html = render(template, {
         CSP_META: `<meta http-equiv="Content-Security-Policy" content="${csp}">`,
+        ICON: NO_FAVICON,
         STYLES: `<style>${css}</style>`,
         APP_VERSION: manifest.appVersion,
         ENGINE_DATA: `<script type="application/octet-stream" id="engineWasm">${wasm.toString("base64")}</script>`,
