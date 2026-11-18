@@ -1,21 +1,32 @@
 {
   "appVersion": "0.1.0",
+  "prepaint": "src/prepaint.js",
   "scripts": [
     "src/core/ns.js",
     "@build",
     "src/core/dom.js",
     "src/core/i18n.js",
+    "src/core/format.js",
     "src/core/bus.js",
     "src/core/router.js",
+    "src/core/theme.js",
     "src/core/engine-web.js",
+    "src/core/store.js",
     "src/platform/tauri.js",
     "src/platform/web.js",
     "src/rescue.js",
+    "src/shell/prefs.js",
+    "src/shell/views.js",
+    "src/shell/shell.js",
     "src/boot.js"
   ],
   "styles": [
     "styles/tokens.css",
-    "styles/components.css"
+    "styles/components.css",
+    "styles/shell.css"
   ],
-  "catalogs": ["en"]
+  "catalogs": ["en"],
+  "serviceWorker": "sw.template.js",
+  "webManifest": "manifest.webmanifest",
+  "icons": ["icons/icon-256.png", "icons/icon-512.png"]
 }

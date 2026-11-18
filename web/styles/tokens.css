@@ -1,8 +1,15 @@
-/* Design tokens (plan B4, B5b). Every colour, border, radius and font in the
-   app comes from these custom properties; no other stylesheet may contain a
-   raw colour literal (scripts/build-web.mjs enforces it). A theme is one
-   [data-theme] block of values. M0 ships the Terminal theme (the default);
-   Daylight and Retro arrive in M9b. */
+/* Design tokens (plan B4, B5b). Every colour, border, shadow, radius and
+   font in the app comes from these custom properties; no other stylesheet
+   may contain a raw colour literal (scripts/build-web.mjs enforces it).
+
+   A theme is one [data-theme] block of values; the pre-paint script sets
+   data-theme on <html> before the first paint, and Settings > Appearance
+   switches it at run time. Every theme defines the same token names
+   (scripts/check-web.mjs checks it, and computes WCAG AA contrast for the
+   declared text and UI pairs: 4.5:1 text, 3:1 UI parts and focus rings).
+
+   M2a ships the three token sets: Terminal (the default) and the B5b
+   starting values of Daylight and Retro. Their full polish is M9b. */
 
 :root,
 [data-theme="terminal"] {
@@ -12,6 +19,7 @@
   --bg: #0E0F12;
   --surface: #161822;
   --surface-raised: #1c1f2b;
+  --scrim: #000000b3;
 
   /* Accents */
   --gold: #E9A715;
@@ -21,16 +29,17 @@
   /* Borders */
   --border: #2a2d35;
   --border-strong: #3a3f4c;
+  --control-border: #6b768e;
 
   /* Text */
   --text: #e2e4e8;
   --text-strong: #eef2ff;
   --text-soft: #cbd5e6;
-
-  /* Muted text */
   --muted: #a3adc2;
   --muted-2: #8f9aaf;
   --muted-3: #6b768e;
+  --on-bg: #e2e4e8;
+  --on-bg-muted: #8f9aaf;
 
   /* Roles */
   --accent: var(--gold);
@@ -38,19 +47,161 @@
   --focus-ring: var(--gold);
   --chip-bg: var(--surface-raised);
   --chip-text: var(--text-soft);
+  --button-bg: var(--surface-raised);
+  --button-text: var(--text);
+  --selected-bg: #2b2410;
+  --selected-text: #f5c95a;
+  --banner-bg: #2b2410;
+  --banner-text: #f5d58a;
 
-  /* Shape and type */
+  /* Chrome: the top bar and the window title strips (Retro: navy). */
+  --bar-bg: var(--surface);
+  --bar-bg-end: var(--surface);
+  --bar-text: var(--text-strong);
+  --bar-focus: var(--gold);
+
+  /* Shape and texture */
   --radius: 0;
   --border-width: 1px;
+  --raised: none;
+  --sunken: none;
+  --pressed: none;
+  --elevation: 0 0 0 1px var(--border-strong);
+  --focus-style: solid;
+
+  /* Type */
   --font-mono: ui-monospace, "Cascadia Mono", "Cascadia Code", Consolas, "SFMono-Regular", Menlo, "Liberation Mono", monospace;
   --font-ui: "Segoe UI", system-ui, -apple-system, "Noto Sans", "Noto Sans Arabic", "Noto Sans CJK SC", "Noto Sans CJK JP", "Noto Sans CJK KR", sans-serif;
+  --font-chrome: var(--font-mono);
+}
+
+/* Space and size: the same in every theme (themes change colour and
+   texture only, never layout or target size). */
+:root {
   --space-1: 0.25rem;
   --space-2: 0.5rem;
   --space-3: 0.75rem;
   --space-4: 1rem;
   --space-6: 1.5rem;
   --target-min: 44px;
+  --bar-height: 3.5rem;
+  --drawer-width: 17rem;
+  --pane-width: 20rem;
   --transition: 120ms ease-out;
+}
+
+/* Daylight: warm off-white "paper" (B5b starting values, tuned for AA). */
+[data-theme="daylight"] {
+  color-scheme: light;
+
+  --bg: #F4F1EA;
+  --surface: #FBF9F4;
+  --surface-raised: #FFFFFF;
+  --scrim: #1f233080;
+
+  --gold: #8A5F00;
+  --green: #2E7A4B;
+  --danger: #B3261E;
+
+  --border: #D9D3C7;
+  --border-strong: #BDB5A6;
+  --control-border: #857d6f;
+
+  --text: #1F2330;
+  --text-strong: #12151d;
+  --text-soft: #2f3442;
+  --muted: #5D6475;
+  --muted-2: #5D6475;
+  --muted-3: #858c9b;
+  --on-bg: #1F2330;
+  --on-bg-muted: #565d6d;
+
+  --accent: var(--gold);
+  --ok: var(--green);
+  --focus-ring: #8A5F00;
+  --chip-bg: var(--surface-raised);
+  --chip-text: var(--text-soft);
+  --button-bg: var(--surface-raised);
+  --button-text: var(--text);
+  --selected-bg: #f3e6c4;
+  --selected-text: #5c3f00;
+  --banner-bg: #f6ead0;
+  --banner-text: #4d3500;
+
+  --bar-bg: var(--surface);
+  --bar-bg-end: var(--surface);
+  --bar-text: var(--text-strong);
+  --bar-focus: #8A5F00;
+
+  --radius: 0;
+  --border-width: 1px;
+  --raised: none;
+  --sunken: none;
+  --pressed: none;
+  --elevation: 0 1px 0 var(--border), 0 0 0 1px var(--border);
+  --focus-style: solid;
+
+  --font-mono: ui-monospace, "Cascadia Mono", "Cascadia Code", Consolas, "SFMono-Regular", Menlo, "Liberation Mono", monospace;
+  --font-ui: "Segoe UI", system-ui, -apple-system, "Noto Sans", "Noto Sans Arabic", "Noto Sans CJK SC", "Noto Sans CJK JP", "Noto Sans CJK KR", sans-serif;
+  --font-chrome: var(--font-mono);
+}
+
+/* Retro: a Windows 95/98 desktop with a nod to XP (B5b starting values).
+   Bevels are box-shadows, so they never shrink a 44 px target. */
+[data-theme="retro"] {
+  color-scheme: light;
+
+  --bg: #008080;
+  --surface: #C0C0C0;
+  --surface-raised: #C0C0C0;
+  --scrim: #00000066;
+
+  --gold: #000080;
+  --green: #005a00;
+  --danger: #800000;
+
+  --border: #808080;
+  --border-strong: #000000;
+  --control-border: #000000;
+
+  --text: #000000;
+  --text-strong: #000000;
+  --text-soft: #1a1a1a;
+  --muted: #333333;
+  --muted-2: #333333;
+  --muted-3: #505050;
+  --on-bg: #FFFFFF;
+  --on-bg-muted: #FFFFFF;
+
+  --accent: var(--gold);
+  --ok: var(--green);
+  --focus-ring: #000000;
+  --chip-bg: var(--surface);
+  --chip-text: var(--text);
+  --button-bg: var(--surface);
+  --button-text: var(--text);
+  --selected-bg: #000080;
+  --selected-text: #FFFFFF;
+  --banner-bg: #FFFFE1;
+  --banner-text: #000000;
+
+  --bar-bg: #000080;
+  /* B5b's #1084D0 is 4.0:1 under white text; darkened to pass AA. */
+  --bar-bg-end: #0f78bd;
+  --bar-text: #FFFFFF;
+  --bar-focus: #FFFFFF;
+
+  --radius: 0;
+  --border-width: 1px;
+  --raised: inset -1px -1px #000000, inset 1px 1px #FFFFFF, inset -2px -2px #808080, inset 2px 2px #DFDFDF;
+  --sunken: inset 1px 1px #808080, inset -1px -1px #FFFFFF, inset 2px 2px #000000, inset -2px -2px #DFDFDF;
+  --pressed: inset 1px 1px #000000, inset -1px -1px #FFFFFF, inset 2px 2px #808080, inset -2px -2px #DFDFDF;
+  --elevation: inset -1px -1px #000000, inset 1px 1px #DFDFDF, inset -2px -2px #808080, inset 2px 2px #FFFFFF;
+  --focus-style: dotted;
+
+  --font-mono: ui-monospace, "Cascadia Mono", Consolas, "Courier New", monospace;
+  --font-ui: Tahoma, "MS Sans Serif", "Segoe UI", system-ui, "Noto Sans", "Noto Sans Arabic", "Noto Sans CJK SC", sans-serif;
+  --font-chrome: var(--font-ui);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -59,26 +210,45 @@
   }
 }
 
-/* Windows High Contrast and other forced-colour modes override every theme. */
+/* Windows High Contrast and other forced-colour modes override every theme
+   (system colours only; bevels and scrims drop out). */
 @media (forced-colors: active) {
   :root,
   [data-theme] {
     --bg: Canvas;
     --surface: Canvas;
     --surface-raised: Canvas;
+    --scrim: Canvas;
     --gold: Highlight;
     --green: CanvasText;
     --danger: CanvasText;
     --border: CanvasText;
     --border-strong: CanvasText;
+    --control-border: ButtonText;
     --text: CanvasText;
     --text-strong: CanvasText;
     --text-soft: CanvasText;
     --muted: GrayText;
     --muted-2: GrayText;
     --muted-3: GrayText;
+    --on-bg: CanvasText;
+    --on-bg-muted: CanvasText;
     --focus-ring: Highlight;
-    --chip-bg: Canvas;
-    --chip-text: CanvasText;
+    --chip-bg: ButtonFace;
+    --chip-text: ButtonText;
+    --button-bg: ButtonFace;
+    --button-text: ButtonText;
+    --selected-bg: Highlight;
+    --selected-text: HighlightText;
+    --banner-bg: Canvas;
+    --banner-text: CanvasText;
+    --bar-bg: Canvas;
+    --bar-bg-end: Canvas;
+    --bar-text: CanvasText;
+    --bar-focus: Highlight;
+    --raised: none;
+    --sunken: none;
+    --pressed: none;
+    --elevation: none;
   }
 }

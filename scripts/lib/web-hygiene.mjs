@@ -52,6 +52,32 @@ export function styleProblems(rel, text) {
     if (m) problems.push(`${rel}: raw colour literal ${m[0]} (use a token from ${TOKENS_FILE})`);
   }
   if (/<\/style/i.test(text)) problems.push(`${rel}: contains </style`);
+  problems.push(...layoutProblems(rel, text));
+  return problems;
+}
+
+// Physical sides in layout rules (plan B5c: RTL mirrors only through
+// logical properties). Banned: margin/padding/border/inset/scroll-margin/
+// scroll-padding -left/-right (and the radius corners), the left and
+// right properties, and text-align, float or clear with left/right.
+// A line may opt out with a comment that says why: a physical-ok marker
+// followed by the reason (none is needed today).
+export const PHYSICAL_SIDES = [
+  [/(^|[\s;{])(?:margin|padding|border|inset|scroll-margin|scroll-padding)-(?:left|right)\b/, "a -left/-right box property (use -inline-start/-end)"],
+  [/(^|[\s;{])border-(?:top|bottom)-(?:left|right)-radius\b/, "a physical corner radius (use border-start-start-radius …)"],
+  [/(^|[\s;{])(?:left|right)\s*:/, "left/right offsets (use inset-inline-start/end)"],
+  [/(^|[\s;{])(?:text-align|float|clear)\s*:\s*(?:left|right)\b/, "text-align/float/clear left or right (use start/end)"]
+];
+const PHYSICAL_OK = /\/\*\s*physical-ok:\s*\S[^*]*\*\//;
+
+export function layoutProblems(rel, text) {
+  const problems = [];
+  text.split("\n").forEach((line, i) => {
+    if (PHYSICAL_OK.test(line)) return;
+    for (const [re, what] of PHYSICAL_SIDES) {
+      if (re.test(line)) problems.push(`${rel}:${i + 1}: physical side in a layout rule: ${what}`);
+    }
+  });
   return problems;
 }
 

@@ -5,16 +5,24 @@
 // offers that raw text unchanged for copying or saving. It never writes,
 // clears, migrates or validates anything.
 //
-// Sources: the app's localStorage keys (prefix "pcalc"). The IndexedDB
-// stores join this list when they exist (M3); until then nothing is stored.
+// Sources: the app's localStorage keys (prefix "pcalc": the theme and
+// language mirrors) and every entry of the IndexedDB store (database
+// "pcalc", object store "docs": the documents and their backups). The
+// database is never created by looking: when it does not exist, the open
+// request's upgrade is aborted before anything is written.
 (function () {
   "use strict";
   const ns = window.PCalc;
   const PREFIX = "pcalc";
   const FILE_NAME = "portable-calculator-rescue.json";
+  const TITLES = {
+    unsupported: ["rescue.unsupported.title", "rescue.unsupported.body"],
+    integrity: ["rescue.integrity.title", "rescue.integrity.body"],
+    "load-failed": ["rescue.load-failed.title", "rescue.load-failed.body"]
+  };
 
   // [{source, key, value}] sorted by key, or null when storage is blocked.
-  function readStored() {
+  function readLocal() {
     const entries = [];
     try {
       const store = window.localStorage;
@@ -29,6 +37,80 @@
     }
     entries.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
     return entries;
+  }
+
+  // Raw text of a stored IndexedDB value (documents are strings; backups
+  // are {atMs, raw}). Never throws.
+  function rawText(value) {
+    if (typeof value === "string") return value;
+    try {
+      return JSON.stringify(value);
+    } catch (_) {
+      return String(value);
+    }
+  }
+
+  // Every entry of pcalc/docs, read-only. Resolves [] when the database
+  // does not exist (without creating it) and null when it cannot be read.
+  function readIndexedDb() {
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (v) => {
+        if (!settled) {
+          settled = true;
+          resolve(v);
+        }
+      };
+      setTimeout(() => finish(null), 3000);
+      let req;
+      try {
+        if (!window.indexedDB) return finish([]);
+        req = window.indexedDB.open(ns.store.DB_NAME);
+      } catch (_) {
+        return finish(null);
+      }
+      req.onupgradeneeded = () => {
+        // The database did not exist: abort, so looking creates nothing.
+        req.transaction.abort();
+        finish([]);
+      };
+      req.onerror = (e) => {
+        if (e && typeof e.preventDefault === "function") e.preventDefault();
+        finish(settled ? null : []);
+      };
+      req.onsuccess = () => {
+        const db = req.result;
+        try {
+          if (!db.objectStoreNames.contains(ns.store.STORE)) {
+            db.close();
+            return finish([]);
+          }
+          const store = db.transaction(ns.store.STORE, "readonly").objectStore(ns.store.STORE);
+          const keys = store.getAllKeys();
+          const values = store.getAll();
+          values.onsuccess = () => {
+            const out = keys.result.map((k, i) => ({ source: "indexedDB", key: String(k), value: rawText(values.result[i]) }));
+            db.close();
+            out.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+            finish(out);
+          };
+          values.onerror = () => {
+            db.close();
+            finish(null);
+          };
+        } catch (_) {
+          db.close();
+          finish(null);
+        }
+      };
+    });
+  }
+
+  async function readStored() {
+    const local = readLocal();
+    const idb = await readIndexedDb();
+    if (local === null && idb === null) return null;
+    return [...(idb || []), ...(local || [])];
   }
 
   // The export: every raw value as a string, byte for byte as stored.
@@ -50,14 +132,16 @@
 
   // Replaces `container`'s content with the rescue view. `state` is the
   // boot outcome ("unsupported", "integrity", "load-failed"), which picks
-  // the title and the explanation.
-  function show(container, t, state) {
+  // the title and the explanation. Resolves to the number of entries (-1
+  // when storage is blocked).
+  async function show(container, t, state) {
     const { el } = ns.dom;
-    const entries = readStored();
+    const entries = await readStored();
+    const [titleKey, bodyKey] = TITLES[state] || TITLES.unsupported;
     const note = el("p", { className: "rescue-note", attrs: { role: "status", "aria-live": "polite" } });
     const children = [
-      el("h1", { className: "title", text: t("rescue." + state + ".title") }),
-      el("p", { className: "status", text: t("rescue." + state + ".body") }),
+      el("h1", { className: "title", text: t(titleKey) }),
+      el("p", { className: "status", text: t(bodyKey) }),
       el("h2", { className: "rescue-heading", text: t("rescue.heading") }),
       el("p", { className: "status", text: t("rescue.readOnly") })
     ];
@@ -100,8 +184,7 @@
     }
     children.push(note);
     children.push(el("p", { className: "status", text: t("rescue.oldApps") }));
-    const section = el("section", { className: "rescue", attrs: { "data-state": entries === null ? "blocked" : String(entries.length) } }, children);
-    section.id = "rescue";
+    const section = el("section", { className: "rescue", attrs: { id: "rescue", "data-state": entries === null ? "blocked" : String(entries.length) } }, children);
     ns.dom.show(container, [section]);
     return entries === null ? -1 : entries.length;
   }

@@ -1,6 +1,7 @@
 // Web / PWA adapter (plan B4): the engine is engine.wasm. Multi-file builds
 // fetch the content-hashed file; the single-file build embeds it as base64
-// in <script type="application/octet-stream" id="engineWasm">.
+// in <script type="application/octet-stream" id="engineWasm">. Documents
+// live in IndexedDB (web/src/core/store.js), validated by the engine.
 //
 // init() rejects with the loader's error codes (engine-web.js), plus "load"
 // when the engine file cannot be read at all.
@@ -54,6 +55,9 @@
     // What the boot reports on <html>: the engine kind and, for WASM, the
     // SHA-256 the loader verified before compiling.
     engineInfo: () => ({ kind: "wasm", sha256: engine === null ? null : engine.sha256 }),
+    openStore: () => window.PCalc.store.openWebStore((op, req) => engine.call(op, req), window.PCalc.bus),
+    persist: () => window.PCalc.store.persist(),
+    estimate: () => window.PCalc.store.estimate(),
     isSmokeTest: async () => false,
     reportSmoke: async () => undefined
   });

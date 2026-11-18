@@ -2,10 +2,16 @@
 // Zero-dependency web build (plan B3, B4). Reads web/build-manifest.json and
 // writes, deterministically (no timestamps, LF only):
 //
-//   dist/desktop/   index.html, app.<hash>.js, app.<hash>.css
-//                   (the Tauri frontendDist; no WASM, the desktop engine is native)
-//   dist/web/       index.html (meta CSP), app.<hash>.js, app.<hash>.css,
-//                   engine.<hash>.wasm   (GitHub Pages, multi-file)
+//   dist/desktop/   index.html, prepaint.<hash>.js, app.<hash>.js, app.<hash>.css
+//                   (the Tauri frontendDist; no WASM, the desktop engine is
+//                   native; the pre-paint script is an external file because
+//                   the desktop CSP is script-src 'self')
+//   dist/web/       index.html (meta CSP, the inline pre-paint script pinned by
+//                   its sha256), app.<hash>.js, app.<hash>.css,
+//                   engine.<hash>.wasm, manifest.webmanifest, icons/*.png and
+//                   sw.js (GitHub Pages, multi-file). sw.js is generated from
+//                   web/sw.template.js with CACHE_NAME "pcalc-v<app>-<buildhash>"
+//                   and the list of every other file of the build
 //   dist/Portable-Calculator-Tool-Mobile.html
 //                   single file: inline CSS and JS (CSP sha256 hashes) and the
 //                   WASM as base64 in <script type="application/octet-stream">
@@ -14,9 +20,11 @@
 // Static checks run first and fail the build (rules in
 // scripts/lib/web-hygiene.mjs, each proven to fire by scripts/safety-eval.mjs
 // slice D): LF-only sources; no HTML sinks, eval or Function constructor; no
-// inline style writes; no raw colour literal outside tokens.css; no closing
+// inline style writes; no raw colour literal outside tokens.css; no physical
+// left/right in layout rules (logical properties only, for RTL); no closing
 // script/style tag inside inlined code; a template without inline styles,
-// handlers or scripts. Banned names may not appear even in comments.
+// handlers or scripts; catalog text without markup. Banned names may not
+// appear even in comments.
 //
 //   node scripts/build-web.mjs                 # everything (needs engine.wasm)
 //   node scripts/build-web.mjs --desktop-only  # just dist/desktop (no WASM needed)
@@ -48,15 +56,17 @@ const SINGLE_NAME = "Portable-Calculator-Tool-Mobile.html";
 const WASM_BUDGET = 1_500_000; // plan B3: <= 1.5 MB
 const SINGLE_BUDGET = 2_000_000; // plan B3: <= 2 MB
 
-// An empty data: icon, so browsers do not request /favicon.ico from the
-// site root (a 404 outside the app on Pages) before the real icons arrive
-// with the web manifest (M2a). img-src allows data: in both web CSPs.
+// An empty data: icon for the single file, so the browser does not ask for
+// /favicon.ico (img-src allows data:). The Pages build links its real icon
+// and the web manifest.
 const NO_FAVICON = '<link rel="icon" href="data:,">';
+const WEB_ICON = '<link rel="icon" href="icons/icon-256.png">\n<link rel="manifest" href="manifest.webmanifest">';
 
-// The Pages CSP of plan B3, verbatim (no frame-ancestors in a meta CSP).
-const WEB_CSP = [
+// The Pages CSP of plan B3 (no frame-ancestors in a meta CSP), plus the
+// sha256 of the inline pre-paint script (plan B5b).
+const webCsp = (prepaintHash) => [
   "default-src 'none'",
-  "script-src 'self' 'wasm-unsafe-eval'",
+  `script-src 'self' 'wasm-unsafe-eval' '${prepaintHash}'`,
   "style-src 'self'",
   "img-src 'self' data:",
   "connect-src 'self' https://api.github.com",
@@ -119,6 +129,10 @@ function loadManifest() {
     fail('manifest scripts must contain "@build" exactly once');
   }
   if (manifest.scripts[0] !== "src/core/ns.js") fail("src/core/ns.js must load first");
+  for (const key of ["prepaint", "serviceWorker", "webManifest"]) {
+    if (typeof manifest[key] !== "string") fail(`manifest ${key} is missing`);
+  }
+  if (!Array.isArray(manifest.icons) || manifest.icons.some((i) => !/^icons\/[a-z0-9-]+\.png$/.test(i))) fail("manifest icons must be icons/<name>.png");
   return manifest;
 }
 
@@ -131,7 +145,7 @@ function loadCatalogs(manifest) {
       const texts = typeof value === "string" ? [value] : key === "_meta" ? [] : Object.values(value);
       for (const text of texts) {
         if (typeof text !== "string") fail(`i18n/${lang}.json: ${key} is not text`);
-        if (/[<>]/.test(text)) fail(`i18n/${lang}.json: ${key} contains markup characters`);
+        if (/[<>]|&[a-zA-Z#][a-zA-Z0-9]*;/.test(text)) fail(`i18n/${lang}.json: ${key} contains markup characters`);
       }
     }
     catalogs[lang] = catalog;
@@ -143,8 +157,10 @@ function loadCatalogs(manifest) {
 // JSON as a JS expression that is also safe inside an inline <script>.
 const jsLiteral = (value) => JSON.stringify(value).replace(/</g, "\\u003c");
 
-function buildChunk(manifest, catalogs, target, engine) {
-  const build = { appVersion: manifest.appVersion, target };
+// cssFile lets the boot check that the page's stylesheet is this build's
+// (no mixed assets after a service-worker upgrade).
+function buildChunk(manifest, catalogs, target, engine, cssFile) {
+  const build = { appVersion: manifest.appVersion, target, cssFile };
   if (engine) {
     build.engineFile = engine.file;
     build.engineSha256 = engine.sha256;
@@ -216,6 +232,13 @@ function main() {
     failOn(scriptProblems(rel, text));
     sources.set(rel, text);
   }
+  const prepaint = readText(manifest.prepaint);
+  failOn(scriptProblems(manifest.prepaint, prepaint));
+  const swTemplate = readText(manifest.serviceWorker);
+  failOn(scriptProblems(manifest.serviceWorker, swTemplate));
+  const webManifest = readText(manifest.webManifest);
+  JSON.parse(webManifest);
+  const icons = manifest.icons.map((rel) => ({ rel, bytes: readFileSync(join(WEB, rel)) }));
   const css = manifest.styles
     .map((rel) => {
       const text = readText(rel);
@@ -223,18 +246,21 @@ function main() {
       return `/* ---- web/${rel} */\n${text.endsWith("\n") ? text : text + "\n"}`;
     })
     .join("");
+  const cssName = `app.${short(css)}.css`;
+  const prepaintHash = b64sha(prepaint);
 
   const info = { appVersion: manifest.appVersion, desktop: {}, web: null, single: null };
   cleanDist(["desktop", "web", SINGLE_NAME, "build-info.json"]);
 
   // Desktop: external files only (desktop CSP: script-src/style-src 'self').
   {
-    const js = assembleJs(manifest, sources, buildChunk(manifest, catalogs, "desktop", null));
+    const js = assembleJs(manifest, sources, buildChunk(manifest, catalogs, "desktop", null, cssName));
     const jsName = `app.${short(js)}.js`;
-    const cssName = `app.${short(css)}.css`;
+    const prepaintName = `prepaint.${short(prepaint)}.js`;
     const dir = join(DIST, "desktop");
     const html = render(template, {
       CSP_META: "",
+      PREPAINT: `<script src="${prepaintName}"></script>`,
       // The desktop webview asks for no favicon; its CSP has no data: images.
       ICON: "",
       STYLES: `<link rel="stylesheet" href="${cssName}">`,
@@ -244,6 +270,7 @@ function main() {
     });
     info.desktop = {
       html: writeOut(dir, "index.html", html),
+      prepaint: writeOut(dir, prepaintName, prepaint),
       js: writeOut(dir, jsName, js),
       css: writeOut(dir, cssName, css)
     };
@@ -270,37 +297,51 @@ function main() {
     const engineName = `engine.${short(wasm)}.wasm`;
     const engine = { file: engineName, sha256: hex(wasm) };
 
-    // Pages: multi-file, content-hashed.
+    // Pages: multi-file, content-hashed, with the service worker.
     {
-      const js = assembleJs(manifest, sources, buildChunk(manifest, catalogs, "web", engine));
+      const js = assembleJs(manifest, sources, buildChunk(manifest, catalogs, "web", engine, cssName));
       const jsName = `app.${short(js)}.js`;
-      const cssName = `app.${short(css)}.css`;
       const dir = join(DIST, "web");
+      const csp = webCsp(prepaintHash);
       const html = render(template, {
-        CSP_META: `<meta http-equiv="Content-Security-Policy" content="${WEB_CSP}">`,
-        ICON: NO_FAVICON,
+        CSP_META: `<meta http-equiv="Content-Security-Policy" content="${csp}">`,
+        PREPAINT: `<script>${prepaint}</script>`,
+        ICON: WEB_ICON,
         STYLES: `<link rel="stylesheet" href="${cssName}">`,
         APP_VERSION: manifest.appVersion,
         ENGINE_DATA: "",
         SCRIPTS: `<script src="${jsName}"></script>`
       });
-      info.web = {
-        csp: WEB_CSP,
+      const files = {
         html: writeOut(dir, "index.html", html),
         js: writeOut(dir, jsName, js),
         css: writeOut(dir, cssName, css),
-        wasm: writeOut(dir, engineName, wasm)
+        wasm: writeOut(dir, engineName, wasm),
+        manifest: writeOut(dir, "manifest.webmanifest", webManifest),
+        icons: icons.map((i) => writeOut(join(dir, "icons"), i.rel.slice("icons/".length), i.bytes))
       };
+      // The build hash covers every file the worker caches, so any change
+      // to any of them gives a new cache.
+      const cached = [files.html, files.js, files.css, files.wasm, files.manifest, ...files.icons];
+      const buildHash = short(cached.map((f) => `${f.file} ${f.sha256}`).join("\n"));
+      const cacheName = `pcalc-v${manifest.appVersion}-${buildHash}`;
+      const assets = cached.map((f) => f.file.replace(/^web\//, ""));
+      const sw = [
+        "// Generated by scripts/build-web.mjs from web/sw.template.js. Do not edit.",
+        `const BUILD = Object.freeze(${jsLiteral({ cacheName, assets })});`,
+        swTemplate
+      ].join("\n");
+      info.web = { csp, buildHash, cacheName, assets, ...files, sw: writeOut(dir, "sw.js", sw) };
     }
 
     // Single file: everything inline, pinned by hashes.
     {
-      const js = assembleJs(manifest, sources, buildChunk(manifest, catalogs, "single", engine));
+      const js = assembleJs(manifest, sources, buildChunk(manifest, catalogs, "single", engine, null));
       if (/<\/script/i.test(js)) fail("inlined JS contains </script");
       if (/<\/style/i.test(css)) fail("inlined CSS contains </style");
       const csp = [
         "default-src 'none'",
-        `script-src '${b64sha(js)}' 'wasm-unsafe-eval'`,
+        `script-src '${prepaintHash}' '${b64sha(js)}' 'wasm-unsafe-eval'`,
         `style-src '${b64sha(css)}'`,
         "img-src data:",
         "connect-src https://api.github.com",
@@ -310,6 +351,7 @@ function main() {
       ].join("; ");
       const html = render(template, {
         CSP_META: `<meta http-equiv="Content-Security-Policy" content="${csp}">`,
+        PREPAINT: `<script>${prepaint}</script>`,
         ICON: NO_FAVICON,
         STYLES: `<style>${css}</style>`,
         APP_VERSION: manifest.appVersion,
@@ -328,7 +370,7 @@ function main() {
   const lines = [`build-web: app ${manifest.appVersion}`];
   lines.push(`  desktop  ${info.desktop.js.file} (${info.desktop.js.bytes} B), ${info.desktop.css.file}`);
   if (info.web) {
-    lines.push(`  web      ${info.web.js.file}, ${info.web.wasm.file} (${info.web.wasm.bytes} B, budget ${WASM_BUDGET})`);
+    lines.push(`  web      ${info.web.js.file}, ${info.web.wasm.file} (${info.web.wasm.bytes} B, budget ${WASM_BUDGET}), sw cache ${info.web.cacheName}`);
     lines.push(`  single   ${info.single.html.file} (${info.single.html.bytes} B, budget ${SINGLE_BUDGET})`);
   } else {
     lines.push("  web and single-file skipped (--desktop-only)");

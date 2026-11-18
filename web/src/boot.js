@@ -1,15 +1,21 @@
-// M0 boot: picks the platform adapter, loads the engine, runs a few engine
-// checks and shows them. On the desktop `--smoke-test` run it also times
-// engine_call round trips and reports the verdict to the native side.
+// Boot (plan B3, B4, M2a): picks the platform adapter, loads the engine,
+// runs the engine self-checks, opens the document store, loads settings
+// and state, applies the theme and language, and starts the shell on the
+// last route. On the desktop `--smoke-test` run it then drives the shell
+// (every route, the store round trips, the theme switch), times engine_call
+// round trips and reports the verdict to the native side.
 //
-// For the headless boot checks (scripts/browser-boot.mjs) it sets on <html>:
+// For the headless checks (scripts/browser-boot.mjs) it sets on <html>:
 //   data-boot         ok | error | unsupported | integrity | load-failed | framed
 //   data-boot-error   the engine's failure code (engine-web.js, web.js)
+//   data-boot-checks  "<passed>/<total>" engine self-checks
 //   data-engine       wasm | native
 //   data-engine-sha256  the SHA-256 the loader verified (web only)
+//   data-store        indexeddb | file | memory
+//   data-assets       consistent | mixed (the stylesheet is this build's)
 //   data-boot-ms      milliseconds from navigation start to the verdict
 // When the engine cannot start, the read-only rescue view (rescue.js) is
-// shown instead of the checks.
+// shown instead of the shell.
 (function () {
   "use strict";
   const ns = window.PCalc;
@@ -17,8 +23,9 @@
   Object.freeze(ns);
 
   const { el, byId, show } = ns.dom;
-  const t = ns.i18n.create(ns.catalogs, "en");
   const root = document.documentElement;
+  const catalogs = ns.catalogs;
+  let t = ns.i18n.create(catalogs, "en");
 
   const DAYS_REQ = '{"startDate":"2024-01-01","endDate":"2024-12-31","includeEndDay":false}';
   // CAP_ENGINE (64 KiB) + 1 byte: refused before parsing.
@@ -89,36 +96,190 @@
     return { rows, versions };
   }
 
-  function render(platform, outcome) {
-    const passedCount = outcome.rows.filter((r) => r.passed).length;
-    const allPassed = passedCount === outcome.rows.length;
-    const list = el("ul", { className: "check-list" },
-      outcome.rows.map((row) =>
-        el("li", { className: row.passed ? "check pass" : "check fail", attrs: { "data-check": row.key } }, [
-          el("span", { className: "check-name", text: t(row.key) }),
-          el("span", { className: "check-result", text: t(row.passed ? "result.pass" : "result.fail") })
-        ])
-      )
-    );
-    const children = [
-      el("h1", { className: "title", text: t("app.title") }),
-      el("p", { className: "status", text: t("app.status") }),
-      el("p", { className: "platform chip", text: t("boot.platform." + platform.name) }),
-      el("p", { className: allPassed ? "summary pass" : "summary fail",
-        text: (allPassed ? t("boot.ready") : t("boot.failed")) + " · " + t("boot.passed", { count: passedCount }) }),
-      list
-    ];
-    if (outcome.versions) {
-      const v = outcome.versions;
-      const items = [el("li", { text: t("versions.api", { version: v.api }) })];
-      for (const [name, version] of Object.entries(v.engines)) {
-        items.push(el("li", { text: t("versions.engine", { name, version }) }));
-      }
-      children.push(el("ul", { className: "versions" }, items));
-    }
-    show(byId("app"), children);
-    return allPassed;
+  // Whether the page's stylesheet belongs to this script's build (a stale
+  // service worker must never pair an index of one version with assets of
+  // another; plan B18 risk 6).
+  function assetsConsistent() {
+    if (!ns.build.cssFile) return true;
+    const links = Array.from(document.querySelectorAll('link[rel="stylesheet"]'));
+    if (links.length === 0) return true; // inline styles (single file)
+    return links.every((l) => String(l.getAttribute("href")).split("/").pop() === ns.build.cssFile);
   }
+
+  // ---- the app context -------------------------------------------------------
+
+  function makeContext(platform, store, outcomes, checks) {
+    const p = ns.prefs;
+    const ctx = {
+      platform,
+      store,
+      outcomes,
+      checks,
+      build: ns.build,
+      settings: p.fromOutcome(outcomes.settings, p.DEFAULT_SETTINGS),
+      state: p.fromOutcome(outcomes.state, p.DEFAULT_STATE),
+      devTools: /^0\./.test(ns.build.appVersion) || /[?&]dev(=|&|$)/.test(window.location.search),
+      lastSaveError: null,
+      t,
+      lang: "en",
+      digits: "western",
+      shell: null
+    };
+
+    const saving = { settings: Promise.resolve(), state: Promise.resolve() };
+    async function save(name) {
+      // One write at a time per document, in order.
+      const next = saving[name].then(async () => {
+        if (store.isReadOnly && store.isReadOnly(name)) return;
+        if (ctx.outcomes[name] && ctx.outcomes[name].readOnly) return;
+        const r = await store.save(name, JSON.stringify(ctx[name]));
+        if (r.ok) {
+          ctx.outcomes[name] = { name, status: "ok", readOnly: false, doc: r.text, schemaVersion: null, backup: null, field: null };
+          if (ctx.lastSaveError && ctx.lastSaveError.name === name) {
+            ctx.lastSaveError = null;
+            if (ctx.shell) ctx.shell.renderBanners();
+          }
+        } else if (r.code !== "read_only") {
+          ctx.lastSaveError = { name, code: r.code };
+          if (ctx.shell) ctx.shell.renderBanners();
+        }
+      });
+      saving[name] = next.catch(() => undefined);
+      return next;
+    }
+    ctx.saveSettings = () => save("settings");
+    ctx.saveState = () => save("state");
+    ctx.flush = () => Promise.all([saving.settings, saving.state]);
+
+    // Language: an explicit code, "auto", or a pseudo-locale (developer).
+    ctx.applyLanguage = () => {
+      const pseudo = ctx.state.dev.pseudoLocale;
+      const lang = pseudo !== "off" && ns.i18n.PSEUDO.includes(pseudo)
+        ? pseudo
+        : ns.i18n.resolve(ctx.settings.language.code, navigator.languages || [navigator.language], Object.keys(catalogs));
+      ctx.lang = lang;
+      ctx.digits = ns.format.digitsFor(lang, ctx.settings.language.digits);
+      t = ns.i18n.create(catalogs, lang);
+      ctx.t = t;
+      ns.theme.applyLanguage(lang, t.dir);
+      const footer = byId("appFooter");
+      if (footer) footer.textContent = t("app.footer", { version: ns.build.appVersion });
+    };
+
+    ctx.setTheme = (pref) => {
+      if (!ns.theme.PREFS.includes(pref)) return;
+      ctx.settings.appearance.theme = pref;
+      ns.theme.apply(pref);
+      return ctx.saveSettings();
+    };
+    ctx.setLanguage = (code) => {
+      ctx.settings.language.code = code;
+      ctx.applyLanguage();
+      if (ctx.shell) ctx.shell.rebuild();
+      return ctx.saveSettings();
+    };
+    ctx.setDigits = (digits) => {
+      ctx.settings.language.digits = digits;
+      ctx.applyLanguage();
+      if (ctx.shell) ctx.shell.refresh();
+      return ctx.saveSettings();
+    };
+    ctx.setPseudo = (pseudo) => {
+      ctx.state.dev.pseudoLocale = pseudo;
+      ctx.applyLanguage();
+      if (ctx.shell) ctx.shell.rebuild();
+      return ctx.saveState();
+    };
+
+    // Retry: reload the document; a good load leaves read-only.
+    ctx.retry = async (name) => {
+      const o = await store.load(name);
+      ctx.outcomes[name] = o;
+      if (o.status === "ok" && (name === "settings" || name === "state")) {
+        ctx[name] = p.fromOutcome(o, name === "settings" ? p.DEFAULT_SETTINGS : p.DEFAULT_STATE);
+        if (name === "settings") ns.theme.apply(ctx.settings.appearance.theme);
+        ctx.applyLanguage();
+        if (ctx.shell) ctx.shell.rebuild();
+      } else if (ctx.shell) {
+        ctx.shell.renderBanners();
+        if (ctx.shell.route() === "settings") ctx.shell.refresh();
+      }
+      return o;
+    };
+    // Start fresh (confirmed in the banner): backup, remove, write anew.
+    ctx.reset = async (name) => {
+      const r = await store.clear(name);
+      if (!r.ok) {
+        ctx.lastSaveError = { name, code: r.code };
+      } else {
+        ctx.outcomes[name] = { name, status: "empty", readOnly: false, doc: null, schemaVersion: null, backup: r.backup || null, field: null };
+        if (name === "settings" || name === "state") await save(name);
+      }
+      if (ctx.shell) {
+        ctx.shell.renderBanners();
+        if (ctx.shell.route() === "settings") ctx.shell.refresh();
+      }
+      return r;
+    };
+
+    // Storage facts for Settings (asynchronous; filled in when known).
+    ctx.describeStorage = async (estimateNode, persistNode) => {
+      const [persisted, estimate] = await Promise.all([ctx.persisted, platform.estimate()]);
+      if (persisted === true || persisted === false) persistNode.textContent = t("settings.storage.persist." + String(persisted));
+      if (estimate && estimate.quota > 0) {
+        estimateNode.textContent = t("settings.storage.estimate", {
+          used: ns.format.bytes(estimate.usage, ctx.lang, { digits: ctx.digits }),
+          quota: ns.format.bytes(estimate.quota, ctx.lang, { digits: ctx.digits })
+        });
+      }
+    };
+    return ctx;
+  }
+
+  // Another tab saved a document: reload and apply it (never save back).
+  function listen(ctx) {
+    const p = ns.prefs;
+    ns.bus.on("settings-changed", async () => {
+      const o = await ctx.store.load("settings");
+      ctx.outcomes.settings = o;
+      if (o.status !== "ok") {
+        if (ctx.shell) ctx.shell.renderBanners();
+        return;
+      }
+      const before = JSON.stringify(ctx.settings);
+      ctx.settings = p.fromOutcome(o, p.DEFAULT_SETTINGS);
+      if (JSON.stringify(ctx.settings) === before) return;
+      ns.theme.apply(ctx.settings.appearance.theme);
+      ctx.applyLanguage();
+      if (ctx.shell) ctx.shell.rebuild();
+    });
+    ns.bus.on("state-changed", async () => {
+      // The route and pane are per window; only the pseudo-locale follows.
+      const o = await ctx.store.load("state");
+      ctx.outcomes.state = o;
+      if (o.status !== "ok") return;
+      const other = p.fromOutcome(o, p.DEFAULT_STATE);
+      if (other.dev.pseudoLocale !== ctx.state.dev.pseudoLocale) {
+        ctx.state.dev.pseudoLocale = other.dev.pseudoLocale;
+        ctx.applyLanguage();
+        if (ctx.shell) ctx.shell.rebuild();
+      }
+    });
+  }
+
+  // ---- service worker (web, served over http(s) only) ---------------------------
+
+  function registerServiceWorker() {
+    if (ns.build.target !== "web" || !("serviceWorker" in navigator)) return;
+    const proto = window.location.protocol;
+    if (proto !== "https:" && proto !== "http:") return;
+    navigator.serviceWorker.register("sw.js", { scope: "./" }).then(
+      () => root.setAttribute("data-sw", "registered"),
+      () => root.setAttribute("data-sw", "failed")
+    );
+  }
+
+  // ---- desktop smoke test ---------------------------------------------------------
 
   // Times `count` sequential engine calls; every answer must be a 365-day
   // result. Returns "<count>x <label> total=… median=… p95=… max=… ms".
@@ -138,8 +299,53 @@
     return count + "x " + label + " total=" + ms(total) + " median=" + ms(at(0.5)) + " p95=" + ms(at(0.95)) + " max=" + ms(sorted[sorted.length - 1]) + " ms";
   }
 
-  // M1: desktop engine_call IPC round trips (plan B17), printed by the
-  // native side in the SMOKE_TEST_OK line.
+  const nextFrame = () => new Promise((r) => setTimeout(r, 30));
+
+  // The shell under the desktop adapter: every route renders its title,
+  // the store round-trips settings and state through store_save and
+  // store_load, an invalid document is refused, and each theme switches
+  // <html data-theme> and the --bg token.
+  async function smokeShell(ctx) {
+    const fails = [];
+    for (const r of ns.router.ROUTES) {
+      ctx.shell.navigate(r);
+      await nextFrame();
+      const title = byId("routeTitle");
+      if (ctx.shell.route() !== r || !title || title.textContent !== t(ns.views.titleKey(r))) fails.push("route " + r);
+    }
+    for (const pref of ["daylight", "retro", "terminal"]) {
+      await ctx.setTheme(pref);
+      const bg = getComputedStyle(root).getPropertyValue("--bg").trim().toUpperCase();
+      const want = { daylight: "#F4F1EA", retro: "#008080", terminal: "#0E0F12" }[pref];
+      if (root.getAttribute("data-theme") !== pref || bg !== want) fails.push("theme " + pref + " bg " + bg);
+    }
+    await ctx.setTheme("system");
+    ctx.shell.navigate("about");
+    await nextFrame();
+    await ctx.flush();
+    // What store_load returns is exactly the canonical text the last
+    // store_save wrote (the engine normalises, e.g. the date calendar).
+    for (const name of ["settings", "state"]) {
+      const o = await ctx.store.load(name);
+      const saved = ctx.outcomes[name];
+      if (o.status !== "ok" || !saved || o.doc !== saved.doc) fails.push("round trip " + name);
+    }
+    let storedTheme = null;
+    try {
+      storedTheme = JSON.parse((await ctx.store.load("settings")).doc).appearance.theme;
+    } catch (_) {
+      storedTheme = null;
+    }
+    if (storedTheme !== "system") fails.push("theme not saved: " + storedTheme);
+    const bad = await ctx.store.save("settings", '{"schemaVersion":1}');
+    if (bad.ok || bad.code !== "invalid") fails.push("invalid save not refused");
+    const countdowns = '{"schemaVersion":1,"items":[{"id":"c-1","label":"Smoke","targetDate":"2026-12-31","targetTime":"09:00","createdAtMs":1,"savedAtMs":2,"finishedSeenAtMs":null}]}';
+    const saved = await ctx.store.save("countdowns", countdowns);
+    const back = await ctx.store.load("countdowns");
+    if (!saved.ok || back.status !== "ok" || JSON.parse(back.doc).items[0].label !== "Smoke") fails.push("round trip countdowns");
+    return { ok: fails.length === 0, text: "shell " + (fails.length === 0 ? "ok (" + ns.router.ROUTES.length + " routes, 3 themes + System, 3 store round trips)" : "FAILED: " + fails.join(", ")) };
+  }
+
   async function measureIpc(platform) {
     try {
       const small = await timeCalls(platform, 100, "engine_call(date.days_between, 72 B)", DAYS_REQ);
@@ -152,10 +358,14 @@
 
   function showMessage(titleKey, bodyKey) {
     show(byId("app"), [
-      el("h1", { className: "title", text: t(titleKey) }),
-      el("p", { className: "status", text: t(bodyKey) })
+      el("section", { className: "rescue" }, [
+        el("h1", { className: "title", text: t(titleKey) }),
+        el("p", { className: "status", text: t(bodyKey) })
+      ])
     ]);
   }
+
+  // ---- boot -------------------------------------------------------------------------
 
   async function boot() {
     const footer = byId("appFooter");
@@ -174,14 +384,14 @@
     };
 
     const platform = pickPlatform();
-    show(byId("app"), [el("p", { className: "status", text: t("boot.checking") })]);
+    show(byId("app"), [el("p", { className: "status rescue", text: t("boot.checking") })]);
     try {
       await platform.init();
     } catch (err) {
       const code = err && typeof err.code === "string" ? err.code : "unknown";
       const state = Object.prototype.hasOwnProperty.call(FAILURE_STATE, code) ? FAILURE_STATE[code] : "unsupported";
       root.dataset.bootError = code;
-      ns.rescue.show(byId("app"), t, state);
+      await ns.rescue.show(byId("app"), t, state);
       finish(state);
       if (await platform.isSmokeTest()) await platform.reportSmoke(false, "engine init failed: " + code);
       return;
@@ -189,16 +399,45 @@
     const info = platform.engineInfo();
     root.dataset.engine = info.kind;
     if (info.sha256) root.dataset.engineSha256 = info.sha256;
+    root.dataset.assets = assetsConsistent() ? "consistent" : "mixed";
 
-    const outcome = await runChecks(platform);
-    const passed = render(platform, outcome);
-    finish(passed ? "ok" : "error");
+    const checks = await runChecks(platform);
+    const passed = checks.rows.filter((r) => r.passed).length;
+    root.dataset.bootChecks = passed + "/" + checks.rows.length;
+
+    const store = await platform.openStore();
+    root.dataset.store = store.kind;
+    const outcomes = {};
+    for (const name of ns.store.NAMES) {
+      try {
+        outcomes[name] = await store.load(name);
+      } catch (_) {
+        outcomes[name] = { name, status: "unreadable", readOnly: true, doc: null, schemaVersion: null, backup: null, field: null };
+      }
+    }
+    const ctx = makeContext(platform, store, outcomes, checks);
+    ctx.persisted = store.kind === "indexeddb" ? platform.persist() : Promise.resolve(null);
+    ns.theme.apply(ctx.settings.appearance.theme);
+    ns.theme.watchSystem();
+    ctx.applyLanguage();
+    listen(ctx);
+
+    // The last route reopens on launch unless the address names one.
+    if (!ns.router.explicit()) {
+      const last = ns.router.known(ctx.state.route) ? ctx.state.route : ns.router.DEFAULT_ROUTE;
+      ns.router.replace(last);
+    }
+    ns.shell.start(byId("app"), ctx);
+    const ok = passed === checks.rows.length && root.dataset.assets === "consistent";
+    finish(ok ? "ok" : "error");
+    if (ok) registerServiceWorker();
 
     if (await platform.isSmokeTest()) {
+      const shell = await smokeShell(ctx);
       const ipc = await measureIpc(platform);
-      const details = outcome.rows.map((r) => r.key + "=" + (r.passed ? "ok" : "fail")).join(" ") +
-        "; boot " + root.dataset.bootMs + " ms; " + ipc.text;
-      await platform.reportSmoke(passed && ipc.ok, details);
+      const details = checks.rows.map((r) => r.key + "=" + (r.passed ? "ok" : "fail")).join(" ") +
+        "; boot " + root.dataset.bootMs + " ms; " + shell.text + "; " + ipc.text;
+      await platform.reportSmoke(ok && shell.ok && ipc.ok, details);
     }
   }
 

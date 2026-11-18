@@ -4,11 +4,22 @@
 (function () {
   "use strict";
   const ALLOWED_ATTRS = new Set([
-    "id", "role", "title", "lang", "dir", "type", "for", "name", "value",
-    "tabindex", "hidden", "disabled", "aria-label", "aria-live", "aria-hidden",
+    "id", "role", "title", "lang", "dir", "type", "for", "name", "value", "href",
+    "tabindex", "hidden", "disabled", "inert", "checked", "selected",
+    "aria-label", "aria-labelledby", "aria-live", "aria-hidden", "aria-modal",
     "aria-describedby", "aria-expanded", "aria-controls", "aria-current",
-    "aria-pressed", "data-check", "data-state"
+    "aria-pressed", "aria-selected", "aria-orientation",
+    "data-check", "data-state", "data-route", "data-tab", "data-doc", "data-value"
   ]);
+  // Links only ever point at an app route.
+  const SAFE_HREF = /^#\/[a-z/]*$/;
+
+  function setAttr(node, name, value) {
+    if (!ALLOWED_ATTRS.has(name)) throw new Error("attribute not allowed: " + name);
+    const text = String(value);
+    if (name === "href" && !SAFE_HREF.test(text)) throw new Error("href not allowed: " + text);
+    node.setAttribute(name, text);
+  }
 
   // Creates <tag> with optional className, text and allowlisted attributes,
   // then appends children (nodes or strings, strings become text nodes).
@@ -19,11 +30,12 @@
     if (o.text !== undefined && o.text !== null) node.textContent = String(o.text);
     if (o.attrs) {
       for (const [name, value] of Object.entries(o.attrs)) {
-        if (!ALLOWED_ATTRS.has(name)) throw new Error("attribute not allowed: " + name);
-        node.setAttribute(name, String(value));
+        if (value === false || value === null || value === undefined) continue;
+        setAttr(node, name, value === true ? "" : value);
       }
     }
     for (const child of children || []) {
+      if (child === null || child === undefined || child === false) continue;
       node.append(typeof child === "string" ? document.createTextNode(child) : child);
     }
     return node;
@@ -38,5 +50,11 @@
     node.replaceChildren(...children);
   }
 
-  window.PCalc.dom = Object.freeze({ el, byId, show });
+  // Sets or removes a boolean attribute such as hidden or inert.
+  function flag(node, name, on) {
+    if (on) setAttr(node, name, "");
+    else node.removeAttribute(name);
+  }
+
+  window.PCalc.dom = Object.freeze({ el, byId, show, setAttr, flag });
 })();

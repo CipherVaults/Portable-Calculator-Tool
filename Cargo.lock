@@ -2296,6 +2296,7 @@ name = "portable-calculator-tool"
 version = "0.1.0"
 dependencies = [
  "pcalc-api",
+ "pcalc-store",
  "serde",
  "serde_json",
  "tauri",

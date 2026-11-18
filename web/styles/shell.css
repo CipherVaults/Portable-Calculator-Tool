@@ -1,0 +1,455 @@
+/* The app shell (plan B5): top bar, drawer, view and the History | Memory |
+   Countdowns pane. Phone first:
+     < 760 px     drawer = modal sheet from the inline start; pane = bottom
+                  sheet (open/close buttons, 44 px targets, safe areas)
+     760-1100 px  drawer = modal; pane = overlay from the inline end
+     >= 1100 px   drawer pinned; pane docked
+   Logical properties only, so the drawer and pane swap sides in RTL. */
+
+.shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto 1fr;
+  grid-template-areas: "bar" "view";
+  min-block-size: 100vh;
+  min-block-size: 100dvh;
+}
+
+/* ---- top bar ---- */
+
+.topbar {
+  grid-area: bar;
+  position: sticky;
+  inset-block-start: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-block-size: var(--bar-height);
+  padding-block-start: env(safe-area-inset-top);
+  padding-inline: max(var(--space-1), env(safe-area-inset-left), env(safe-area-inset-right));
+  background: var(--bar-bg);
+  background-image: linear-gradient(90deg, var(--bar-bg), var(--bar-bg-end));
+  color: var(--bar-text);
+  border-block-end: var(--border-width) solid var(--border);
+}
+
+[dir="rtl"] .topbar {
+  background-image: linear-gradient(270deg, var(--bar-bg), var(--bar-bg-end));
+}
+
+.topbar-title {
+  flex: 1;
+  min-inline-size: 0;
+  margin: 0;
+  padding-inline: var(--space-2);
+  font-family: var(--font-chrome);
+  font-size: 1.125rem;
+  font-weight: 600;
+  color: var(--bar-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  min-inline-size: var(--target-min);
+  min-block-size: var(--target-min);
+  padding: 0;
+  background: transparent;
+  color: var(--text);
+  border: var(--border-width) solid transparent;
+  border-radius: var(--radius);
+  font: inherit;
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.topbar .icon-button {
+  color: var(--bar-text);
+}
+
+.topbar .icon-button:focus-visible {
+  outline-color: var(--bar-focus);
+  outline-offset: -4px;
+}
+
+.icon-button:hover {
+  border-color: var(--control-border);
+}
+
+/* ---- drawer ---- */
+
+.drawer {
+  position: fixed;
+  inset-block: 0;
+  inset-inline-start: 0;
+  z-index: 40;
+  inline-size: min(var(--drawer-width), 86vw);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-block: env(safe-area-inset-top) max(var(--space-4), env(safe-area-inset-bottom));
+  background: var(--surface);
+  color: var(--text);
+  border-inline-end: var(--border-width) solid var(--border-strong);
+  box-shadow: var(--elevation);
+}
+
+.drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-block-size: var(--bar-height);
+  padding-inline: var(--space-4) var(--space-1);
+  border-block-end: var(--border-width) solid var(--border);
+}
+
+.drawer-title {
+  margin: 0;
+  font-family: var(--font-chrome);
+  font-weight: 600;
+  color: var(--accent);
+  min-inline-size: 0;
+  overflow-wrap: anywhere;
+}
+
+.nav-group {
+  padding-block: var(--space-2);
+  border-block-end: var(--border-width) solid var(--border);
+}
+
+.nav-group-title {
+  margin: 0;
+  padding-block: var(--space-2) var(--space-1);
+  padding-inline: var(--space-4);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.nav-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.nav-link {
+  display: flex;
+  align-items: center;
+  min-block-size: var(--target-min);
+  padding-inline: var(--space-4);
+  color: var(--text);
+  text-decoration: none;
+  border-inline-start: 3px solid transparent;
+  overflow-wrap: anywhere;
+}
+
+.nav-link:hover {
+  background: var(--surface-raised);
+}
+
+.nav-link[aria-current="page"] {
+  background: var(--selected-bg);
+  color: var(--selected-text);
+  border-inline-start-color: var(--selected-text);
+  font-weight: 600;
+}
+
+.nav-link:focus-visible {
+  outline-offset: -2px;
+}
+
+/* ---- view ---- */
+
+.view {
+  grid-area: view;
+  min-inline-size: 0;
+  padding-block: var(--space-4) var(--space-6);
+  padding-inline: max(var(--space-3), env(safe-area-inset-left), env(safe-area-inset-right));
+}
+
+.view:focus {
+  outline: none;
+}
+
+.view:focus-visible {
+  outline: 2px var(--focus-style) var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.view-body,
+.banners {
+  max-inline-size: 48rem;
+  margin-inline: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.banners {
+  margin-block-end: var(--space-4);
+}
+
+.banner {
+  margin: 0;
+  padding: var(--space-3);
+  background: var(--banner-bg);
+  color: var(--banner-text);
+  border: var(--border-width) solid var(--control-border);
+  overflow-wrap: anywhere;
+}
+
+.banner-text {
+  margin: 0 0 var(--space-2);
+}
+
+.panel {
+  margin: 0;
+  padding: var(--space-4);
+  background: var(--surface);
+  color: var(--text);
+  border: var(--border-width) solid var(--border);
+  box-shadow: var(--elevation);
+  overflow-wrap: anywhere;
+}
+
+.panel-title {
+  margin: 0 0 var(--space-3);
+  font-family: var(--font-chrome);
+  font-size: 1.125rem;
+  color: var(--accent);
+}
+
+/* Retro: navy title strips on the panels (B5b). */
+[data-theme="retro"] .panel-title {
+  margin-block: calc(3px - var(--space-4)) var(--space-3);
+  margin-inline: calc(3px - var(--space-4));
+  padding-block: var(--space-1);
+  padding-inline: var(--space-2);
+  background-image: linear-gradient(90deg, var(--bar-bg), var(--bar-bg-end));
+  color: var(--bar-text);
+  font-size: 1rem;
+}
+
+[dir="rtl"][data-theme="retro"] .panel-title {
+  background-image: linear-gradient(270deg, var(--bar-bg), var(--bar-bg-end));
+}
+
+.placeholder-when {
+  margin: 0 0 var(--space-2);
+  font-family: var(--font-mono);
+  color: var(--accent);
+}
+
+/* ---- settings controls ---- */
+
+.choices {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  display: grid;
+  gap: var(--space-1);
+}
+
+.choices legend {
+  padding: 0;
+  margin-block-end: var(--space-2);
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+.choice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-block-size: var(--target-min);
+  padding-inline: var(--space-2);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.choice input {
+  inline-size: 1.25rem;
+  block-size: 1.25rem;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.field {
+  display: grid;
+  gap: var(--space-1);
+  margin-block-end: var(--space-3);
+}
+
+.field-label {
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+.select {
+  min-block-size: var(--target-min);
+  max-inline-size: 100%;
+  padding-inline: var(--space-2);
+  background: var(--button-bg);
+  color: var(--button-text);
+  border: var(--border-width) solid var(--control-border);
+  border-radius: var(--radius);
+  box-shadow: var(--sunken);
+  font: inherit;
+}
+
+.sample {
+  margin: 0;
+  font-family: var(--font-mono);
+  color: var(--text-soft);
+}
+
+/* ---- pane: a bottom sheet on phones ---- */
+
+.pane {
+  position: fixed;
+  z-index: 40;
+  inset-inline: 0;
+  inset-block-end: 0;
+  max-block-size: 75vh;
+  display: flex;
+  flex-direction: column;
+  padding-block-end: env(safe-area-inset-bottom);
+  padding-inline: max(0px, env(safe-area-inset-left), env(safe-area-inset-right));
+  background: var(--surface);
+  color: var(--text);
+  border-block-start: 2px solid var(--border-strong);
+  box-shadow: var(--elevation);
+}
+
+.pane-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding-inline: var(--space-4) var(--space-1);
+  min-block-size: var(--target-min);
+}
+
+.pane-title {
+  margin: 0;
+  font-family: var(--font-chrome);
+  font-size: 1rem;
+  color: var(--text-strong);
+  min-inline-size: 0;
+}
+
+.pane-tabs {
+  display: flex;
+  border-block-end: var(--border-width) solid var(--border);
+}
+
+.pane-tab {
+  flex: 1;
+  min-block-size: var(--target-min);
+  min-inline-size: 0;
+  padding-inline: var(--space-2);
+  background: transparent;
+  color: var(--text);
+  border: 0;
+  border-block-end: 3px solid transparent;
+  font: inherit;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.pane-tab[aria-selected="true"] {
+  color: var(--selected-text);
+  background: var(--selected-bg);
+  border-block-end-color: var(--selected-text);
+  font-weight: 600;
+}
+
+.pane-tab:focus-visible {
+  outline-offset: -3px;
+}
+
+.pane-panel {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-4);
+  min-block-size: 8rem;
+}
+
+.scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  background: var(--scrim);
+}
+
+/* ---- 760-1100 px: the pane is an overlay from the inline end ---- */
+
+@media (min-width: 760px) {
+  .pane {
+    inset-block: 0;
+    inset-inline-start: auto;
+    inset-inline-end: 0;
+    inline-size: min(var(--pane-width), 90vw);
+    max-block-size: none;
+    padding-block-start: env(safe-area-inset-top);
+    border-block-start: 0;
+    border-inline-start: 2px solid var(--border-strong);
+  }
+
+  .view {
+    padding-inline: var(--space-6);
+  }
+}
+
+/* ---- >= 1100 px: drawer pinned, pane docked ---- */
+
+@media (min-width: 1100px) {
+  .shell {
+    grid-template-columns: var(--drawer-width) minmax(0, 1fr) auto;
+    grid-template-areas: "bar bar bar" "drawer view pane";
+  }
+
+  .drawer {
+    grid-area: drawer;
+    position: sticky;
+    inset-block-start: var(--bar-height);
+    z-index: auto;
+    inline-size: auto;
+    block-size: calc(100vh - var(--bar-height));
+    padding-block-start: 0;
+    box-shadow: none;
+    border-inline-end: var(--border-width) solid var(--border);
+  }
+
+  .drawer-head {
+    display: none;
+  }
+
+  .pane {
+    grid-area: pane;
+    position: sticky;
+    inset-block-start: var(--bar-height);
+    z-index: auto;
+    inline-size: var(--pane-width);
+    block-size: calc(100vh - var(--bar-height));
+    box-shadow: none;
+    border-inline-start: var(--border-width) solid var(--border);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .nav-link,
+  .button,
+  .pane-tab {
+    transition: background-color var(--transition), color var(--transition);
+  }
+}

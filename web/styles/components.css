@@ -1,6 +1,7 @@
 /* Components (plan B4). Phone first: the base rules target a narrow screen,
    wider layouts are added with min-width queries. Layout uses logical
-   properties only (inline/block), so RTL languages mirror for free.
+   properties only (inline/block), so RTL languages mirror for free
+   (scripts/lib/web-hygiene.mjs bans physical sides in layout rules).
    Colours come from tokens.css only. */
 
 *,
@@ -9,11 +10,17 @@
   box-sizing: border-box;
 }
 
+/* The hidden attribute always wins over a component's display. */
+[hidden] {
+  display: none !important;
+}
+
 html {
   background: var(--bg);
-  color: var(--text);
+  color: var(--on-bg);
   font-family: var(--font-ui);
   font-size: 100%;
+  line-height: 1.45;
   -webkit-text-size-adjust: 100%;
   text-size-adjust: 100%;
 }
@@ -21,26 +28,31 @@ html {
 body {
   margin: 0;
   min-block-size: 100vh;
-  padding-block: max(var(--space-4), env(safe-area-inset-top)) max(var(--space-4), env(safe-area-inset-bottom));
-  padding-inline: max(var(--space-4), env(safe-area-inset-left)) max(var(--space-4), env(safe-area-inset-right));
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
+  min-block-size: 100dvh;
+  background: var(--bg);
 }
 
 .app {
-  inline-size: 100%;
-  max-inline-size: 48rem;
-  margin-inline: auto;
-  background: var(--surface);
-  border: var(--border-width) solid var(--border);
-  border-radius: var(--radius);
-  padding: var(--space-4);
+  min-block-size: 100vh;
+}
+
+.app-footer {
+  padding-block: var(--space-3) max(var(--space-3), env(safe-area-inset-bottom));
+  padding-inline: max(var(--space-4), env(safe-area-inset-left), env(safe-area-inset-right));
+  text-align: center;
+  color: var(--on-bg-muted);
+  font-size: 0.8125rem;
+  font-family: var(--font-mono);
+}
+
+:focus-visible {
+  outline: 2px var(--focus-style) var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .title {
   margin: 0 0 var(--space-2);
-  font-family: var(--font-mono);
+  font-family: var(--font-chrome);
   font-size: 1.25rem;
   color: var(--accent);
 }
@@ -48,7 +60,12 @@ body {
 .status {
   margin: 0 0 var(--space-3);
   color: var(--text-soft);
-  line-height: 1.5;
+}
+
+.hint {
+  margin: var(--space-2) 0 0;
+  color: var(--muted);
+  font-size: 0.875rem;
 }
 
 .chip {
@@ -79,79 +96,110 @@ body {
 }
 
 .check-list,
-.versions {
+.versions,
+.plain-list,
+.doc-list {
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
-.check {
+.check,
+.doc-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: var(--space-3);
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
   min-block-size: var(--target-min);
   padding-block: var(--space-2);
   border-block-end: var(--border-width) solid var(--border);
 }
 
-.check-name {
+.check-name,
+.doc-name {
   color: var(--text);
+  min-inline-size: 0;
 }
 
-.check-result {
+.check-result,
+.doc-status {
   font-family: var(--font-mono);
-  white-space: nowrap;
-}
-
-.check.pass .check-result {
   color: var(--ok);
 }
 
-.check.fail .check-result {
+.check.fail .check-result,
+.doc-status.warn {
   color: var(--danger);
 }
 
 .versions {
-  margin-block-start: var(--space-4);
   font-family: var(--font-mono);
   font-size: 0.875rem;
   color: var(--muted);
 }
 
-.versions li {
+.versions li,
+.plain-list li {
   padding-block: var(--space-1);
 }
 
-.app-footer {
-  text-align: center;
-  color: var(--muted-2);
-  font-size: 0.8125rem;
-  font-family: var(--font-mono);
+.plain-list li {
+  color: var(--text-soft);
 }
 
-:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
 }
 
-@media (min-width: 760px) {
-  .app {
-    padding: var(--space-6);
-  }
+.button {
+  min-block-size: var(--target-min);
+  min-inline-size: var(--target-min);
+  padding-inline: var(--space-4);
+  background: var(--button-bg);
+  color: var(--button-text);
+  border: var(--border-width) solid var(--control-border);
+  border-radius: var(--radius);
+  box-shadow: var(--raised);
+  font: inherit;
+  cursor: pointer;
+}
 
-  .title {
-    font-size: 1.5rem;
-  }
+.button:hover {
+  border-color: var(--accent);
+}
+
+.button:active {
+  box-shadow: var(--pressed);
+}
+
+.button.danger {
+  color: var(--danger);
+  border-color: var(--danger);
 }
 
 /* Read-only rescue view (no engine). Raw stored text wraps at any point so
    long JSON never widens a phone screen. */
+.rescue {
+  max-inline-size: 48rem;
+  margin-inline: auto;
+  padding-block: max(var(--space-4), env(safe-area-inset-top)) var(--space-4);
+  padding-inline: max(var(--space-4), env(safe-area-inset-left), env(safe-area-inset-right));
+  color: var(--on-bg);
+}
+
+.rescue .status,
+.rescue .title {
+  color: var(--on-bg);
+}
+
 .rescue-heading {
   margin: var(--space-4) 0 var(--space-2);
-  font-family: var(--font-mono);
+  font-family: var(--font-chrome);
   font-size: 1rem;
-  color: var(--text-strong);
+  color: var(--on-bg);
 }
 
 .rescue-list {
@@ -168,7 +216,7 @@ body {
 .rescue-key {
   margin: 0 0 var(--space-1);
   font-family: var(--font-mono);
-  color: var(--accent);
+  color: var(--on-bg);
   overflow-wrap: anywhere;
 }
 
@@ -180,7 +228,7 @@ body {
   overflow-wrap: anywhere;
   font-family: var(--font-mono);
   font-size: 0.8125rem;
-  color: var(--text-soft);
+  color: var(--text);
   background: var(--surface-raised);
   padding: var(--space-2);
 }
@@ -188,27 +236,11 @@ body {
 .rescue-note {
   min-block-size: 1.5em;
   margin: var(--space-2) 0;
-  color: var(--ok);
+  color: var(--on-bg);
 }
 
-.button-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-}
-
-.button {
-  min-block-size: var(--target-min);
-  min-inline-size: var(--target-min);
-  padding-inline: var(--space-4);
-  background: var(--chip-bg);
-  color: var(--text);
-  border: var(--border-width) solid var(--border-strong);
-  border-radius: var(--radius);
-  font: inherit;
-  cursor: pointer;
-}
-
-.button:hover {
-  border-color: var(--accent);
+@media (min-width: 760px) {
+  .title {
+    font-size: 1.5rem;
+  }
 }
