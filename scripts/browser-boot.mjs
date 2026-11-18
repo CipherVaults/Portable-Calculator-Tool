@@ -43,7 +43,16 @@
 //              is open the footer is inert and the page does not scroll;
 //              opened by a click that does not focus (Safari), closing
 //              still returns focus to the toggle; a Settings select keeps
-//              focus through the re-render its change causes (ArrowDown)
+//              focus through the re-render its change causes (ArrowDown).
+//              Bottom bar: ☰, the quick switch and the pane button sit at
+//              the bottom edge in thumb reach (44 px targets, full width,
+//              the top bar holds only the title); a tapped text field hides
+//              the bar and nothing covers the field, tapping away shows it
+//              again; the quick switch goes back to the previous tool; a
+//              phone turned to landscape (390x844 -> 844x390) keeps the
+//              open drawer and its focus, Esc returns focus to ☰ in the top
+//              bar, and turning back moves the focused ☰ into the bottom
+//              bar without losing focus (Chromium blurs a moved element)
 //   theme      Settings > Appearance switches data-theme and the --bg
 //              colour at once; after a reload the pre-paint script has set
 //              the theme before <body> exists and the first frame already
@@ -56,7 +65,11 @@
 //              Retro themes, and the en-XA (+35%) and ar-XB (RTL)
 //              pseudo-locales: no horizontal scroll, nothing outside the
 //              viewport, every visible control at least 44 px tall; in
-//              ar-XB the drawer opens from the right. At 900 px the pane is
+//              ar-XB the drawer opens from the right. On every phone width
+//              the bottom bar is at the bottom edge with 44x44 px buttons
+//              and the page's last line (the footer) ends above it. Phone
+//              landscape: 740x360 keeps the bottom bar, 844x390 has the
+//              tablet layout (buttons in the top bar). At 900 px the pane is
 //              an overlay from the inline end; at 1280 px the drawer is
 //              pinned and the pane docked (all three themes each); crossing
 //              900 -> 1280 px keeps the pane open and focus on its tab.
@@ -494,6 +507,42 @@ const BOX = (id) => `(() => {
     viewInert: document.getElementById("view").inert, route: document.documentElement.dataset.route };
 })()`;
 
+// The bottom bar and the top bar's visible children; with end = true the
+// page is scrolled to its end first (and back after) to see whether the
+// footer ends above the bar (getBoundingClientRect lays out at once).
+const BAR = (end = false) => `(() => {
+  const bar = document.getElementById("bottombar");
+  const footer = document.getElementById("appFooter");
+  const y = scrollY;
+  if (${end}) scrollTo(0, document.documentElement.scrollHeight);
+  const r = bar.getBoundingClientRect();
+  const f = footer.getBoundingClientRect();
+  const buttons = [...bar.querySelectorAll("button")].filter((b) => getComputedStyle(b).display !== "none").map((b) => {
+    const q = b.getBoundingClientRect();
+    return { id: b.id, w: Math.round(q.width * 10) / 10, h: Math.round(q.height * 10) / 10, top: q.top };
+  });
+  const out = { shown: getComputedStyle(bar).display !== "none", top: r.top, bottom: r.bottom, left: r.left, right: r.right,
+    vw: document.documentElement.clientWidth, vh: innerHeight, buttons, footerBottom: f.bottom,
+    topbar: [...document.getElementById("topbar").children].filter((c) => getComputedStyle(c).display !== "none").map((c) => c.id) };
+  if (${end}) scrollTo(0, y);
+  return out;
+})()`;
+
+// A phone's bottom bar: at the bottom edge, full width, ☰ and the pane
+// button (and the quick switch when shown) at least 44x44 px, the top bar
+// holding only the title, and (scrolled to the end) the footer above it.
+function phoneBarProblem(b) {
+  const ids = b.buttons.map((x) => x.id);
+  const bad = [];
+  if (!b.shown) bad.push("bar hidden");
+  if (Math.abs(b.bottom - b.vh) > 1 || b.left > 0.5 || Math.abs(b.right - b.vw) > 0.5) bad.push(`bar box ${Math.round(b.left)}..${Math.round(b.right)} x ${Math.round(b.top)}..${Math.round(b.bottom)} in ${b.vw}x${b.vh}`);
+  if (!ids.includes("drawerToggle") || !ids.includes("paneToggle")) bad.push("buttons " + ids.join(","));
+  for (const x of b.buttons) if (x.w < 44 || x.h < 44) bad.push(`${x.id} ${x.w}x${x.h}`);
+  if (b.topbar.join() !== "routeTitle") bad.push("top bar " + b.topbar.join(","));
+  if (b.footerBottom > b.top + 0.5) bad.push(`footer ends at ${Math.round(b.footerBottom)}, bar starts at ${Math.round(b.top)}`);
+  return bad.length ? bad.join("; ") : null;
+}
+
 // What a layout check needs: overflow, boxes outside the viewport, small
 // targets and clipped text.
 const LAYOUT = `(() => {
@@ -520,7 +569,7 @@ const LAYOUT = `(() => {
     if (lines(range) > 1) out.broken.push(name(n) + " " + JSON.stringify(n.textContent) + " wraps");
   }
   // No word of a title, tab or nav label breaks in the middle.
-  for (const n of document.querySelectorAll(".topbar-title, .pane-tab, .nav-link, .drawer-title, .pane-title")) {
+  for (const n of document.querySelectorAll(".topbar-title, .pane-tab, .nav-link, .drawer-title, .pane-title, .bar-label")) {
     if (!shown(n)) continue;
     const walker = document.createTreeWalker(n, NodeFilter.SHOW_TEXT);
     for (let t = walker.nextNode(); t; t = walker.nextNode()) {
@@ -663,6 +712,45 @@ async function shellChecks(edgePath, url) {
     }
     expect("shell.focus-returns-without-a-focusing-tap", openers.every((o) => o.at === o.toggle), openers.map((o) => `${o.toggle}/${o.close} -> ${o.at}`).join(", "));
 
+    // The bottom bar: in thumb reach, 44 px targets, top bar = title only.
+    const bar = await json(tab, BAR(true));
+    const reach = bar.buttons.every((x) => x.top >= bar.vh * 0.8);
+    const barProblem = phoneBarProblem(bar);
+    expect("shell.bottom-bar-in-thumb-reach", !barProblem && reach, barProblem || JSON.stringify(bar));
+
+    // A text field (the calculators' fields arrive later; one is added
+    // here) hides the bar while it has focus; tapping away shows it again.
+    await tab.evaluate(`(() => { const i = document.createElement("input"); i.type = "text"; i.id = "bootTyping"; i.className = "select"; document.getElementById("viewBody").append(i); return true; })()`);
+    await tab.tap("#bootTyping");
+    const typing = await json(tab, `(() => { const i = document.getElementById("bootTyping"); const r = i.getBoundingClientRect();
+      return { focused: document.activeElement === i, barShown: getComputedStyle(document.getElementById("bottombar")).display !== "none", onTop: document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === i }; })()`);
+    await tab.tap("#routeTitle");
+    const away = await json(tab, `({ barShown: getComputedStyle(document.getElementById("bottombar")).display !== "none", active: document.activeElement && (document.activeElement.id || document.activeElement.tagName) })`);
+    await tab.evaluate(`document.getElementById("bootTyping").remove(); true`);
+    expect("shell.bottom-bar-steps-aside-while-typing", typing.focused && !typing.barShown && typing.onTop && away.barShown && away.active !== "bootTyping", JSON.stringify({ typing, away }));
+
+    // The quick switch goes back to the previous tool.
+    const before = await tab.evaluate(`document.documentElement.dataset.route`);
+    await goRoute(tab, "percent");
+    const label = await tab.evaluate(`document.getElementById("quickSwitch").textContent`);
+    await tab.tap("#quickSwitch");
+    const switched = await waitFor(tab, `document.documentElement.dataset.route === ${JSON.stringify(before)} && document.getElementById("quickSwitch").getAttribute("aria-label")`);
+    expect("shell.quick-switch-goes-back", switched === "Back to Percentage" && label.includes(await tab.evaluate(`document.getElementById("routeTitle").textContent`)), `from percent back to ${before}: label "${label}", now "${switched}"`);
+
+    // A phone turned to landscape with the drawer open, then back.
+    await tab.tap("#drawerToggle");
+    await tab.viewport(844, 390, true);
+    const turned = await json(tab, BOX("drawer"));
+    await tab.key("Escape");
+    const esc = await json(tab, `(() => { const a = document.activeElement; return { active: a && a.id, inTop: document.getElementById("topbar").contains(a), barShown: getComputedStyle(document.getElementById("bottombar")).display !== "none" }; })()`);
+    await tab.viewport(390, 844, true);
+    const back = await json(tab, `(() => { const a = document.activeElement; return { active: a && a.id, inBar: document.getElementById("bottombar").contains(a) }; })()`);
+    expect(
+      "shell.turning-the-phone-keeps-drawer-and-focus",
+      !turned.hidden && turned.role === "dialog" && turned.focusInside && esc.active === "drawerToggle" && esc.inTop && !esc.barShown && back.active === "drawerToggle" && back.inBar,
+      JSON.stringify({ turned, esc, back })
+    );
+
     // A Settings select that re-labels the app keeps focus: ArrowDown on a
     // closed select changes it on every press (Windows), so a keyboard user
     // must be able to press twice.
@@ -734,6 +822,11 @@ async function layoutChecks(edgePath, url, shots) {
       await tab.evaluate(`document.getElementById("drawerToggle").focus(); true`);
       await tab.tap("#drawerToggle");
     };
+    const phoneBar = async () => phoneBarProblem(await json(tab, BAR(true)));
+    const topBarOnly = async () => {
+      const b = await json(tab, BAR());
+      return !b.shown && b.topbar.join() === "drawerToggle,routeTitle,paneToggle" ? null : JSON.stringify(b);
+    };
     // The selected pane tab is bold and wider: select the longest label
     // (Countdowns) once, so every pane case below shows the worst case.
     await tab.viewport(360, 800);
@@ -745,7 +838,7 @@ async function layoutChecks(edgePath, url, shots) {
       await tab.viewport(width, 800);
       for (const route of ["standard", "settings", "about", "converter/temperature"]) {
         await goRoute(tab, route);
-        await record(`${width}.${route.replace("/", "-")}`);
+        await record(`${width}.${route.replace("/", "-")}`, phoneBar);
       }
       await goRoute(tab, "standard");
       await openDrawer();
@@ -757,7 +850,7 @@ async function layoutChecks(edgePath, url, shots) {
       await tab.key("Escape");
       for (const theme of ["daylight", "retro"]) {
         await pickTheme(tab, theme);
-        await record(`${width}.settings-${theme}`);
+        await record(`${width}.settings-${theme}`, phoneBar);
         await openDrawer();
         await record(`${width}.drawer-${theme}`);
         await tab.key("Escape");
@@ -770,8 +863,12 @@ async function layoutChecks(edgePath, url, shots) {
       // The longest titles (two lines in the top bar, never cut).
       for (const route of ["converter/mass", "mini"]) {
         await goRoute(tab, route);
-        await record(`${width}.en-XA-${route.replace("/", "-")}`);
+        await record(`${width}.en-XA-${route.replace("/", "-")}`, phoneBar);
       }
+      // The longest quick-switch label (en-XA "Weight and mass"), two lines.
+      await goRoute(tab, "converter/mass");
+      await goRoute(tab, "standard");
+      await record(`${width}.en-XA-quick-switch`, phoneBar);
       await openDrawer();
       await record(`${width}.en-XA-drawer`);
       await tab.key("Escape");
@@ -780,7 +877,7 @@ async function layoutChecks(edgePath, url, shots) {
       await record(`${width}.en-XA-pane-open`);
       await tab.key("Escape");
       await pickPseudo(tab, "ar-XB");
-      await record(`${width}.ar-XB-settings`, (l) => (l.dir === "rtl" ? null : `dir ${l.dir}`));
+      await record(`${width}.ar-XB-settings`, async (l) => (l.dir === "rtl" ? phoneBar() : `dir ${l.dir}`));
       await openDrawer();
       await record(`${width}.ar-XB-drawer`, async () => {
         const d = await json(tab, BOX("drawer"));
@@ -793,6 +890,33 @@ async function layoutChecks(edgePath, url, shots) {
       await tab.key("Escape");
       await pickPseudo(tab, "off");
     }
+    // Phone landscape: 740x360 (a small phone) keeps the bottom bar,
+    // 844x390 (iPhone 13/14) has the tablet layout with the buttons in the
+    // top bar; the drawer and the pane open from there.
+    for (const [w, h, bottom] of [[740, 360, true], [844, 390, false]]) {
+      await tab.viewport(w, h, true);
+      const barCheck = bottom ? phoneBar : topBarOnly;
+      for (const route of ["standard", "settings"]) {
+        await goRoute(tab, route);
+        await record(`landscape-${w}x${h}.${route}`, barCheck);
+      }
+      await openDrawer();
+      await record(`landscape-${w}x${h}.drawer-open`, async () => {
+        const d = await json(tab, BOX("drawer"));
+        return !d.hidden && d.role === "dialog" && d.focusInside ? null : JSON.stringify(d);
+      });
+      await tab.key("Escape");
+      await goRoute(tab, "date");
+      await tab.key("h", { ctrl: true });
+      await record(`landscape-${w}x${h}.pane-open`, async () => {
+        const p = await json(tab, BOX("pane"));
+        const sheet = Math.abs(p.bottom - p.vh) <= 1 && p.left <= 0.5;
+        const overlay = Math.abs(p.right - p.vw) <= 0.5 && p.top <= 0.5;
+        return !p.hidden && p.role === "dialog" && (bottom ? sheet : overlay) ? null : JSON.stringify(p);
+      });
+      await tab.key("Escape");
+    }
+
     // Overlay pane (760-1100) and the docked layout (>= 1100).
     await tab.viewport(900, 800, false);
     await goRoute(tab, "about");
@@ -801,6 +925,9 @@ async function layoutChecks(edgePath, url, shots) {
       const p = await json(tab, BOX("pane"));
       return p.role === "dialog" && Math.abs(p.right - p.vw) <= 0.5 && p.top <= 0.5 && Math.abs(p.bottom - p.vh) <= 1 && p.width <= 320.5 ? null : JSON.stringify(p);
     });
+    await tab.key("Escape");
+    await record("900.top-bar", topBarOnly);
+    await tab.key("h", { ctrl: true });
     await tab.key("Escape");
     // A tablet turned (or a window widened) while the overlay pane has
     // focus: the pane stays open, now docked, and focus moves to its

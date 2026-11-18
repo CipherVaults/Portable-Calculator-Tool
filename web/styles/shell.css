@@ -101,6 +101,95 @@ html[data-modal] {
   border-color: var(--control-border);
 }
 
+/* In the top bar (760 px and up) a bar button shows its icon only; its
+   accessible name is its aria-label. */
+.topbar .bar-label {
+  display: none;
+}
+
+/* ---- bottom bar (< 760 px): ☰ Menu, the quick switch, History ----
+   In thumb reach at the bottom of a phone, over the safe area. The shell
+   hides it (hidden attribute) from 760 px and while a field that brings
+   up the on-screen keyboard has focus; the drawer and the pane sheet
+   cover it when open. */
+.bottombar {
+  position: fixed;
+  inset-inline: 0;
+  inset-block-end: 0;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) minmax(0, 1fr);
+  grid-template-areas: "menu switch pane";
+  align-items: stretch;
+  gap: var(--space-1);
+  padding-block: var(--space-1) max(var(--space-1), env(safe-area-inset-bottom));
+  padding-inline: max(var(--space-1), env(safe-area-inset-left), env(safe-area-inset-right));
+  background: var(--bar-bg);
+  background-image: linear-gradient(90deg, var(--bar-bg), var(--bar-bg-end));
+  color: var(--bar-text);
+  border-block-start: var(--border-width) solid var(--border);
+}
+
+[dir="rtl"] .bottombar {
+  background-image: linear-gradient(270deg, var(--bar-bg), var(--bar-bg-end));
+}
+
+.bottombar #drawerToggle {
+  grid-area: menu;
+}
+
+.bottombar #quickSwitch {
+  grid-area: switch;
+}
+
+.bottombar #paneToggle {
+  grid-area: pane;
+}
+
+.bottombar .bar-button {
+  flex-direction: column;
+  gap: 0.125rem;
+  inline-size: 100%;
+  min-inline-size: var(--target-min);
+  min-block-size: var(--target-min);
+  padding-block: var(--space-1);
+  padding-inline: var(--space-1);
+  color: var(--bar-text);
+}
+
+.bottombar .bar-button:focus-visible {
+  outline-color: var(--bar-focus);
+  outline-offset: -3px;
+}
+
+.bar-icon {
+  line-height: 1;
+}
+
+.bottombar .bar-label {
+  max-inline-size: 100%;
+  font-family: var(--font-chrome);
+  font-size: 0.75rem;
+  line-height: 1.2;
+  text-align: center;
+  overflow-wrap: break-word;
+}
+
+/* The page ends above the bar: the last line (the footer) is never
+   behind it. Two label lines, the icon and the padding (about 4.4rem)
+   fit in 5rem. */
+@media (max-width: 759.98px) {
+  body {
+    padding-block-end: calc(5rem + env(safe-area-inset-bottom));
+  }
+}
+
+@media (min-width: 760px) {
+  .bottombar {
+    display: none;
+  }
+}
+
 /* ---- drawer ---- */
 
 .drawer {

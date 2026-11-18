@@ -105,7 +105,7 @@ function B_tests(web, engine) {
       const drawer = app.byId("drawer");
       toggle.focus();
       toggle.click();
-      const others = ["topbar", "view", "pane", "appFooter"].map((id) => app.byId(id));
+      const others = ["topbar", "view", "bottombar", "pane", "appFooter"].map((id) => app.byId(id));
       const ok =
         attr(app.html, "data-modal") === "drawer" &&
         !drawer.hasAttribute("hidden") &&
@@ -253,6 +253,113 @@ function B_tests(web, engine) {
       const pane = app.byId("pane");
       const ok = !pane.hasAttribute("hidden") && attr(pane, "role") === null && app.byId("scrim").hasAttribute("hidden") && !app.byId("view").hasAttribute("inert");
       return { ok, detail: `role=${attr(pane, "role")} scrim hidden=${app.byId("scrim").hasAttribute("hidden")}` };
+    },
+    async "bottom-bar-on-phones"(src) {
+      // Below 760 px the ☰ and pane buttons are in the bottom bar (thumb
+      // reach) and the top bar holds only the title; from 760 px they are
+      // back in the top bar and the bottom bar is hidden. One element each,
+      // moved, never copied; the accessible name contains the visible label.
+      const app = await boot({ overrides: src, width: 390 });
+      const ids = (id) => app.byId(id).children.map((c) => c.id).join(",");
+      const bar = app.byId("bottombar");
+      const steps = [];
+      const phoneOk = () => !bar.hasAttribute("hidden") && ids("bottombar") === "drawerToggle,quickSwitch,paneToggle" && ids("topbar") === "routeTitle" && attr(app.byId("shell"), "data-bar") === "bottom" && !app.byId("drawerToggle").hasAttribute("hidden");
+      steps.push(["390", phoneOk()]);
+      app.setWidth(900);
+      steps.push(["900", bar.hasAttribute("hidden") && ids("topbar") === "drawerToggle,routeTitle,paneToggle" && !app.byId("drawerToggle").hasAttribute("hidden") && attr(app.byId("shell"), "data-bar") === "top"]);
+      app.setWidth(1280);
+      steps.push(["1280", bar.hasAttribute("hidden") && ids("topbar") === "drawerToggle,routeTitle,paneToggle" && app.byId("drawerToggle").hasAttribute("hidden")]);
+      app.setWidth(360);
+      steps.push(["360", phoneOk()]);
+      const once = ["drawerToggle", "paneToggle", "quickSwitch"].every((id) => app.document.querySelectorAll("#" + id).length === 1);
+      const named = [["drawerToggle", "Menu"], ["paneToggle", "History"]].every(([id, label]) => {
+        const b = app.byId(id);
+        if (!b || !b.querySelector(".bar-label")) return false;
+        const visible = b.querySelector(".bar-label").textContent;
+        return visible === label && attr(b, "aria-label").toLowerCase().includes(visible.toLowerCase()) && attr(b.querySelector(".bar-icon"), "aria-hidden") === "true";
+      });
+      const nav = bar.localName === "nav" && attr(bar, "aria-label") === "Quick navigation";
+      return { ok: steps.every(([, ok]) => ok) && once && named && nav, detail: `${steps.map(([w, ok]) => `${w}:${ok}`).join(" ")} single=${once} label-in-name=${named} nav=${nav}` };
+    },
+    async "bottom-bar-rotation-keeps-modal"(src) {
+      // A phone turned to landscape (390 -> 844 px) with the drawer or the
+      // pane open: it stays open with focus inside; Esc returns focus to
+      // the same button, now in the top bar. Back to 390 px, the focused
+      // button moves into the bottom bar with its focus.
+      const app = await boot({ overrides: src, width: 390 });
+      const drawer = app.byId("drawer");
+      const pane = app.byId("pane");
+      const toggle = app.byId("drawerToggle");
+      toggle.focus();
+      toggle.click();
+      app.setWidth(844);
+      const drawerKept = !drawer.hasAttribute("hidden") && attr(drawer, "role") === "dialog" && inside(drawer, app.document.activeElement);
+      app.document.press("Escape");
+      const back = app.document.activeElement === toggle && inside(app.byId("topbar"), toggle) && app.byId("bottombar").hasAttribute("hidden");
+      app.setWidth(390);
+      const moved = app.document.activeElement === toggle && inside(app.byId("bottombar"), toggle);
+      app.byId("paneToggle").focus();
+      app.byId("paneToggle").click();
+      app.setWidth(844);
+      const paneKept = !pane.hasAttribute("hidden") && attr(pane, "role") === "dialog" && inside(pane, app.document.activeElement);
+      app.document.press("Escape");
+      const paneBack = pane.hasAttribute("hidden") && app.document.activeElement === app.byId("paneToggle");
+      const ok = drawerKept && back && moved && paneKept && paneBack;
+      return { ok, detail: `drawer kept=${drawerKept} esc->top-bar toggle=${back} moved with focus=${moved} pane kept=${paneKept} pane esc=${paneBack}` };
+    },
+    async "bottom-bar-hides-while-typing"(src) {
+      // The bar never covers a field being typed in: hidden while a field
+      // that brings up the on-screen keyboard has focus, shown again after;
+      // an app keypad field (inputmode="none") and a select keep it.
+      const app = await boot({ overrides: src, width: 390 });
+      await go(app, "settings");
+      const bar = app.byId("bottombar");
+      const field = (type, extra) => {
+        const n = app.document.createElement("input");
+        n.setAttribute("type", type);
+        if (extra) n.setAttribute(extra[0], extra[1]);
+        app.byId("viewBody").append(n);
+        return n;
+      };
+      const text = field("text");
+      const pad = field("text", ["inputmode", "none"]);
+      const steps = [];
+      text.focus();
+      steps.push(["text", bar.hasAttribute("hidden")]);
+      pad.focus();
+      steps.push(["keypad", !bar.hasAttribute("hidden")]);
+      text.focus();
+      text.blur();
+      steps.push(["blur", !bar.hasAttribute("hidden")]);
+      text.focus();
+      app.byId("digitsSelect").focus();
+      steps.push(["select", !bar.hasAttribute("hidden")]);
+      const area = app.document.createElement("textarea");
+      app.byId("viewBody").append(area);
+      area.focus();
+      steps.push(["textarea", bar.hasAttribute("hidden")]);
+      // The view that held the focused field is replaced (a route change).
+      await go(app, "about");
+      steps.push(["route-change", !bar.hasAttribute("hidden")]);
+      app.setWidth(900);
+      steps.push(["900", bar.hasAttribute("hidden")]);
+      return { ok: steps.every(([, ok]) => ok), detail: steps.map(([s, ok]) => `${s}:${ok}`).join(" ") };
+    },
+    async "quick-switch-back"(src) {
+      // The middle of the bottom bar goes back to the previous tool, so two
+      // tools are one tap apart; it is hidden until there is one.
+      const app = await boot({ overrides: src, width: 390 });
+      const q = app.byId("quickSwitch");
+      const first = q.hasAttribute("hidden");
+      await go(app, "date");
+      const shown = !q.hasAttribute("hidden") && q.textContent.includes("Standard") && attr(q, "aria-label") === "Back to Standard";
+      q.click();
+      await until(() => app.html.getAttribute("data-route") === "standard", 1500);
+      const back = app.html.getAttribute("data-route") === "standard" && attr(q, "aria-label") === "Back to Date" && app.document.activeElement === app.byId("view");
+      q.click();
+      await until(() => app.html.getAttribute("data-route") === "date", 1500);
+      const again = app.html.getAttribute("data-route") === "date";
+      return { ok: first && shown && back && again, detail: `hidden first=${first} shows Standard=${shown} back=${back} again=${again} label="${q.textContent}"` };
     },
     async "theme-switch-instant-and-saved"(src) {
       const app = await boot({ overrides: src });
@@ -650,6 +757,16 @@ export const MUTANTS = [
   ["B", "shortcuts-skip-fields-and-composition", "src/shell/shell.js", "if (e.isComposing || editable(e.target)) return;", ""],
   ["B", "settings-change-keeps-focus", "src/shell/shell.js", "if (again && again !== document.activeElement) again.focus({ preventScroll: true });", "void again;"],
   ["B", "modal-opener-without-focus", "src/shell/shell.js", "return toggle;", "return active;"],
+  ["B", "drawer-modal-inert", "src/shell/shell.js", "nodes.bottombar, nodes.pane, byId(\"appFooter\")]", "nodes.pane, byId(\"appFooter\")]"],
+  ["B", "bottom-bar-on-phones", "src/shell/shell.js", "const bottom = !roomy.matches;", "const bottom = false;"],
+  ["B", "bottom-bar-on-phones", "src/shell/shell.js", "show(nodes.bottombar, [nodes.drawerToggle, nodes.quickSwitch, nodes.paneToggle]);", "show(nodes.bottombar, [nodes.drawerToggle, nodes.quickSwitch]);"],
+  ["B", "bottom-bar-rotation-keeps-modal", "src/shell/shell.js", 'roomy.addEventListener("change", placeBars);', 'roomy.addEventListener("change", onWidth);'],
+  ["B", "bottom-bar-rotation-keeps-modal", "src/shell/shell.js", "else active.focus({ preventScroll: true });", "else void active;"],
+  ["B", "bottom-bar-hides-while-typing", "src/shell/shell.js", 'document.addEventListener("focusin", (e) => setTyping(bringsKeyboard(e.target)));', ""],
+  ["B", "bottom-bar-hides-while-typing", "src/shell/shell.js", 'document.addEventListener("focusout", (e) => setTyping(bringsKeyboard(e.relatedTarget)));', ""],
+  ["B", "bottom-bar-hides-while-typing", "src/shell/shell.js", 'node.getAttribute("inputmode") === "none" || ', ""],
+  ["B", "bottom-bar-hides-while-typing", "src/shell/shell.js", "      setTyping(bringsKeyboard(document.activeElement));\n", "\n"],
+  ["B", "quick-switch-back", "src/shell/shell.js", "      if (route !== r) previous = route;\n", "\n"],
   ["C", "ui-newer-banner", "src/shell/shell.js", 'if (o.status === "newer") {', "if (false) {"],
   ["C", "corrupt-backup-first-then-read-only", "src/core/store.js", "const wrote = await backend.rotate(name, entry, (old) => old && sameRaw(old.raw, raw));", "const wrote = false && entry;"],
   ["C", "corrupt-backup-first-then-read-only", "src/core/store.js", 'if (readOnly.has(name)) return { ok: false, code: "read_only" };', ""],

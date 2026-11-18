@@ -6,8 +6,9 @@
 //   Document / Element / Text   createElement, attributes, textContent,
 //                               className, append, replaceChildren, a
 //                               compound-selector querySelector(All) and
-//                               closest, focus with document.activeElement,
-//                               bubbling events, click() (radio change),
+//                               closest, focus with document.activeElement
+//                               (focus, focusin, focusout), bubbling
+//                               events, click() (radio change),
 //                               and a browser-like Tab key that moves focus
 //                               in document order (it skips hidden and
 //                               disabled elements but, like an older
@@ -305,11 +306,19 @@ class Element extends Node {
     if (!this.isConnected || this.isHidden) return;
     if (!doc.isFocusable(this) && !this.hasAttribute("tabindex")) return;
     const prev = doc.activeElement;
+    if (prev === this) return;
+    // As a browser: focusout on the old element, then focus and focusin
+    // (both bubble but focus), each with the other element as relatedTarget.
     doc.activeElement = this;
-    if (prev !== this) this.dispatchEvent(new Event("focus", { bubbles: false }));
+    if (prev && prev !== doc.body) prev.dispatchEvent(new Event("focusout", { props: { relatedTarget: this } }));
+    this.dispatchEvent(new Event("focus", { bubbles: false }));
+    this.dispatchEvent(new Event("focusin", { props: { relatedTarget: prev && prev !== doc.body ? prev : null } }));
   }
   blur() {
-    if (this.ownerDocument.activeElement === this) this.ownerDocument.activeElement = this.ownerDocument.body;
+    const doc = this.ownerDocument;
+    if (doc.activeElement !== this) return;
+    doc.activeElement = doc.body;
+    this.dispatchEvent(new Event("focusout", { props: { relatedTarget: null } }));
   }
   click() {
     if (this.hasAttribute("disabled")) return;

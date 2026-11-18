@@ -66,7 +66,7 @@ node scripts/build-web.mjs                  # run twice and compare dist/ for de
 node scripts/check-wasm.mjs                 # builds the release bridges itself (cargo), then goldens + 200k seeded random requests, native vs WASM in 3 time zones
 node scripts/check-i18n.mjs                 # catalogs (keys, placeholders, CLDR plurals, no markup, no unused keys) and the formatter/plural units
 node scripts/check-web.mjs                  # every theme has the same tokens and passes WCAG AA; every inline block of the built pages is CSP-pinned
-node scripts/browser-boot.mjs               # headless Edge (CDP, throwaway profiles): both web builds boot under their CSPs; rescue paths; the shell (drawer, bottom sheet, theme pre-paint, tab sync); 360/390/440 px layouts incl. pseudo-locales (--shots <dir> saves PNGs); the service-worker upgrade test
+node scripts/browser-boot.mjs               # headless Edge (CDP, throwaway profiles): both web builds boot under their CSPs; rescue paths; the shell (drawer, bottom sheet, phone bottom bar, theme pre-paint, tab sync); 360/390/440 px and phone-landscape layouts incl. pseudo-locales (--shots <dir> saves PNGs); the service-worker upgrade test
 node scripts/check-versions.mjs
 node scripts/check-unsafe.mjs
 node scripts/safety-eval.mjs                # slices B and C (shell and stores in a mini-DOM with a fake IndexedDB, both adapters, real engine.wasm) and D (static hygiene), each rule with a mutant proof; and the built dist/

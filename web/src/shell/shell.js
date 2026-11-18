@@ -1,13 +1,22 @@
-// The phone-first app shell (plan B5): a top bar with the ☰ drawer button,
-// the current tool's title and the pane button; the drawer (Calculator,
+// The phone-first app shell (plan B5): a top bar with the current tool's
+// title; the ☰ drawer button and the pane button; the drawer (Calculator,
 // Tools, Converter, then Settings and About); the main view; and the
 // History | Memory | Countdowns pane.
 //
 // Layout by width (styles/shell.css; JS only keeps the semantics in step):
-//   < 760 px     drawer: modal sheet from the inline start; pane: bottom
-//                sheet (open/close buttons, no dragging, safe-area insets)
-//   760-1100 px  drawer: modal; pane: modal overlay from the inline end
+//   < 760 px     the top bar holds only the title; the ☰ Menu button, a
+//                quick switch back to the previous tool and the History
+//                button sit in a bottom bar in thumb reach (44 px targets,
+//                safe-area insets), hidden while a field that brings up
+//                the on-screen keyboard has focus. Drawer: modal sheet from
+//                the inline start; pane: bottom sheet over the bar
+//                (open/close buttons, no dragging, safe-area insets)
+//   760-1100 px  ☰, title and pane button in the top bar; drawer: modal;
+//                pane: modal overlay from the inline end
 //   >= 1100 px   drawer pinned as a column; pane docked as a column
+// The two buttons are the same elements in both bars (moved, never
+// copied), so their ids, state and focus return do not depend on the bar.
+// Crossing 760 px moves them and keeps an open drawer or pane open.
 // A modal drawer or pane traps Tab inside itself, closes on Esc or the
 // scrim, makes the rest of the page (footer included) inert, stops the page
 // behind it scrolling (<html data-modal>) and returns focus to the button
@@ -27,6 +36,7 @@
   const router = ns.router;
   const PANE_TABS = Object.freeze(["history", "memory", "countdowns"]);
   const WIDE = "(min-width: 1100px)";
+  const ROOMY = "(min-width: 760px)";
 
   const FOCUSABLE = "a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])";
 
@@ -42,8 +52,12 @@
   // views.js; it gains `shell` (this controller).
   function start(root, ctx) {
     const wide = media(WIDE);
+    const roomy = media(ROOMY);
     let modal = null; // { name: "drawer" | "pane", opener, container }
     let route = router.current();
+    let previous = null; // the route before this one (the quick switch)
+    let barAtBottom = null; // where the buttons are: true bottom, false top
+    let typing = false; // a field that brings up the keyboard has focus
     let resetArmed = null;
     let pendingFocus = false;
 
@@ -52,12 +66,23 @@
 
     function build() {
       const tt = t();
-      nodes.drawerToggle = el("button", { className: "icon-button", text: "☰",
-        attrs: { id: "drawerToggle", type: "button", "aria-controls": "drawer", "aria-expanded": "false", "aria-label": tt("shell.menu.open") } });
+      // A bar button: an icon, and a label shown only in the bottom bar.
+      // The accessible name (aria-label) contains the visible label.
+      const face = (icon, label) => [
+        el("span", { className: "bar-icon", text: icon, attrs: { "aria-hidden": "true" } }),
+        el("span", { className: "bar-label", text: label })
+      ];
+      nodes.drawerToggle = el("button", { className: "icon-button bar-button",
+        attrs: { id: "drawerToggle", type: "button", "aria-controls": "drawer", "aria-expanded": "false", "aria-label": tt("shell.menu.open") } }, face("☰", tt("shell.bar.menu")));
       nodes.title = el("h1", { className: "topbar-title", attrs: { id: "routeTitle" } });
-      nodes.paneToggle = el("button", { className: "icon-button", text: "⟲",
-        attrs: { id: "paneToggle", type: "button", "aria-controls": "pane", "aria-expanded": "false", "aria-label": tt("pane.open") } });
+      nodes.paneToggle = el("button", { className: "icon-button bar-button",
+        attrs: { id: "paneToggle", type: "button", "aria-controls": "pane", "aria-expanded": "false", "aria-label": tt("pane.open") } }, face("⟲", tt("shell.bar.history")));
+      nodes.quickLabel = el("span", { className: "bar-label" });
+      nodes.quickSwitch = el("button", { className: "icon-button bar-button bar-switch", attrs: { id: "quickSwitch", type: "button", hidden: true } },
+        [el("span", { className: "bar-icon", text: "⇄", attrs: { "aria-hidden": "true" } }), nodes.quickLabel]);
       nodes.topbar = el("header", { className: "topbar", attrs: { id: "topbar" } }, [nodes.drawerToggle, nodes.title, nodes.paneToggle]);
+      nodes.bottombar = el("nav", { className: "bottombar", attrs: { id: "bottombar", "aria-label": tt("shell.bar.label"), hidden: true } }, [nodes.quickSwitch]);
+      barAtBottom = null;
 
       nodes.links = new Map();
       const group = (key, routes) =>
@@ -98,12 +123,15 @@
         nodes.panePanel
       ]);
       nodes.scrim = el("div", { className: "scrim", attrs: { id: "scrim", hidden: true } });
-      nodes.shell = el("div", { className: "shell", attrs: { id: "shell" } }, [nodes.topbar, nodes.drawer, nodes.view, nodes.pane, nodes.scrim]);
+      nodes.shell = el("div", { className: "shell", attrs: { id: "shell" } }, [nodes.topbar, nodes.drawer, nodes.view, nodes.bottombar, nodes.pane, nodes.scrim]);
       show(root, [nodes.shell]);
 
       nodes.drawerToggle.addEventListener("click", () => (modal && modal.name === "drawer" ? closeModal() : openDrawer()));
       nodes.drawerClose.addEventListener("click", () => closeModal());
       nodes.paneToggle.addEventListener("click", () => togglePane());
+      nodes.quickSwitch.addEventListener("click", () => {
+        if (previous) navigate(previous, { focus: true });
+      });
       nodes.paneClose.addEventListener("click", () => setPane(false));
       nodes.scrim.addEventListener("click", () => closeModal());
       for (const [tab, b] of nodes.tabs) b.addEventListener("click", () => selectTab(tab));
@@ -126,7 +154,7 @@
     // Everything but the open modal is inert (where supported) and hidden
     // from assistive technology; the focus trap covers older browsers.
     function setInert(except) {
-      for (const n of [nodes.topbar, nodes.drawer, nodes.view, nodes.pane, byId("appFooter")]) {
+      for (const n of [nodes.topbar, nodes.drawer, nodes.view, nodes.bottombar, nodes.pane, byId("appFooter")]) {
         if (!n) continue;
         const on = except !== null && n !== except;
         flag(n, "inert", on);
@@ -272,6 +300,68 @@
       setPane(nodes.pane.hasAttribute("hidden"), { focus: true });
     }
 
+    // ---- bars ----------------------------------------------------------------
+
+    // Puts the ☰ and pane buttons in the bottom bar below 760 px and in the
+    // top bar from 760 px. An open drawer or pane stays open (a phone
+    // turned to landscape); a moved button that had focus keeps it.
+    function placeBars() {
+      const bottom = !roomy.matches;
+      if (barAtBottom === bottom) {
+        showBottomBar();
+        return;
+      }
+      barAtBottom = bottom;
+      const active = document.activeElement;
+      if (bottom) {
+        show(nodes.topbar, [nodes.title]);
+        show(nodes.bottombar, [nodes.drawerToggle, nodes.quickSwitch, nodes.paneToggle]);
+      } else {
+        show(nodes.topbar, [nodes.drawerToggle, nodes.title, nodes.paneToggle]);
+        show(nodes.bottombar, [nodes.quickSwitch]);
+      }
+      nodes.shell.setAttribute("data-bar", bottom ? "bottom" : "top");
+      showBottomBar();
+      // Moving the focused button dropped its focus (as in a browser).
+      if (active && active !== document.body && document.activeElement !== active && nodes.shell.contains(active)) {
+        if (active.closest("[hidden]")) nodes.view.focus({ preventScroll: true });
+        else active.focus({ preventScroll: true });
+      }
+    }
+
+    function showBottomBar() {
+      flag(nodes.bottombar, "hidden", !barAtBottom || typing);
+    }
+
+    // A field that brings up the on-screen keyboard: the bottom bar steps
+    // aside so it never covers what is being typed. Selects, pickers,
+    // read-only fields and inputmode="none" (an app keypad) do not count.
+    const KEYBOARD_INPUTS = new Set(["", "text", "search", "email", "url", "tel", "password", "number"]);
+    function bringsKeyboard(node) {
+      if (!node || node.nodeType !== 1 || typeof node.getAttribute !== "function") return false;
+      if (node.getAttribute("inputmode") === "none" || node.hasAttribute("readonly") || node.hasAttribute("disabled")) return false;
+      if (node.isContentEditable) return true;
+      if (node.localName === "textarea") return true;
+      return node.localName === "input" && KEYBOARD_INPUTS.has(String(node.getAttribute("type") || "").toLowerCase());
+    }
+
+    function setTyping(on) {
+      if (typing === on) return;
+      typing = on;
+      showBottomBar();
+    }
+
+    // The quick switch goes back to the previous tool (this session only).
+    function showQuickSwitch() {
+      const known = previous !== null && router.known(previous);
+      flag(nodes.quickSwitch, "hidden", !known);
+      if (!known) return;
+      const name = t()(ns.views.titleKey(previous));
+      nodes.quickLabel.textContent = name;
+      nodes.quickSwitch.setAttribute("aria-label", t()("shell.bar.back", { name }));
+      nodes.quickSwitch.setAttribute("data-route", previous);
+    }
+
     // Re-applies the layout semantics when the width crosses 1100 px (a
     // tablet turned, a window resized). The pane's open state is kept; an
     // open pane only waits to be asked for again on a narrow screen. Focus
@@ -281,6 +371,7 @@
       const active = document.activeElement;
       const wasIn = nodes.drawer.contains(active) ? "drawer" : nodes.pane.contains(active) ? "pane" : null;
       if (modal) closeModal({ restoreFocus: false, layoutChange: true });
+      placeBars();
       flag(nodes.drawer, "hidden", drawerIsModal());
       flag(nodes.drawerToggle, "hidden", !drawerIsModal());
       nodes.shell.setAttribute("data-layout", wide.matches ? "wide" : "narrow");
@@ -305,6 +396,7 @@
     // ---- routes ------------------------------------------------------------
 
     function renderRoute(r, opts) {
+      if (route !== r) previous = route;
       route = r;
       const tt = t();
       nodes.title.textContent = tt(ns.views.titleKey(r));
@@ -314,6 +406,9 @@
         else a.removeAttribute("aria-current");
       }
       show(nodes.viewBody, ns.views.render(ctx, r));
+      showQuickSwitch();
+      // A focused field the new view replaced no longer holds the keyboard.
+      setTyping(bringsKeyboard(document.activeElement));
       nodes.shell.setAttribute("data-route", r);
       document.documentElement.setAttribute("data-route", r);
       if (ctx.state.route !== r) {
@@ -460,7 +555,10 @@
     renderRoute(route);
     renderBanners();
     wide.addEventListener("change", onWidth);
+    roomy.addEventListener("change", placeBars);
     document.addEventListener("keydown", onKey);
+    document.addEventListener("focusin", (e) => setTyping(bringsKeyboard(e.target)));
+    document.addEventListener("focusout", (e) => setTyping(bringsKeyboard(e.relatedTarget)));
     router.onChange((r) => {
       const focus = pendingFocus;
       pendingFocus = false;

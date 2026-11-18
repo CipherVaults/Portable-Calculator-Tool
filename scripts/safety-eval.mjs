@@ -9,7 +9,11 @@
 //   B.*          the shell under both adapters (web: WASM + IndexedDB;
 //                desktop: a fake Tauri bridge): the closed route list, the
 //                last route restored, drawer and bottom sheet as modals
-//                (inert background, focus trap, Esc, focus return), pinned
+//                (inert background, focus trap, Esc, focus return), the
+//                phone bottom bar (☰, quick switch and pane buttons moved
+//                there below 760 px and back from 760 px, kept modals and
+//                focus across the crossing, hidden while a keyboard field
+//                has focus, the quick switch back), pinned
 //                and docked layouts when wide, Alt+1..6 and Ctrl+H, the
 //                theme switch and its pre-paint mirror, System following
 //                the OS, pseudo-locales, the i18n units and catalogs, and

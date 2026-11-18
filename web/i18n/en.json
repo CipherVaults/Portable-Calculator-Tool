@@ -24,6 +24,10 @@
 
   "shell.menu.open": "Open the menu",
   "shell.menu.close": "Close the menu",
+  "shell.bar.label": "Quick navigation",
+  "shell.bar.menu": "Menu",
+  "shell.bar.history": "History",
+  "shell.bar.back": "Back to {name}",
   "nav.group.calculator": "Calculator",
   "nav.group.tools": "Tools",
   "nav.group.converter": "Converter",
