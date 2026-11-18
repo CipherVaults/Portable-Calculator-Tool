@@ -1,0 +1,29 @@
+# Rust / Cargo build output
+target/
+**/target/
+
+# Tauri generated schemas
+src-tauri/gen/
+
+# Web build output (scripts/build-web.mjs writes dist/)
+dist/
+
+# Node artifacts (Node only runs the checks; there are no npm dependencies)
+node_modules/
+
+# Logs, backups and editor leftovers
+*.log
+*.bak
+*.tmp
+*.orig
+*.swp
+
+# Local operating system files
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Local secrets and key material (defense in depth)
+.env*
+*.pem
+*.key

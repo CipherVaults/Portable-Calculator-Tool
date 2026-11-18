@@ -1,0 +1,20 @@
+# LF everywhere. The web CSP hashes, the WASM integrity constant and the
+# golden fixtures are byte-exact, so no checkout may rewrite line endings.
+* text=auto eol=lf
+*.rs text eol=lf
+*.toml text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.webmanifest text eol=lf
+*.svg text eol=lf
+*.lock text eol=lf
+crates/*/tests/fixtures/*.json text eol=lf
+*.png binary
+*.ico binary
+*.icns binary
+*.wasm binary
