@@ -50,7 +50,9 @@
 //   D.mutant.*   each rule refuses a minimal violating input, including the
 //                cases that slipped through the old comment strippers
 //                (`x = "a//"; el.innerHTML = y;` in JS, `"http://x"; unsafe {`
-//                in Rust), physical left/right in layout CSS, catalog
+//                in Rust), a panicking call (unwrap, expect, panic! and the
+//                like) in engine code above its tests, physical left/right
+//                in layout CSS, catalog
 //                markup, placeholders, plurals and unused keys
 //                (check-i18n), contrast and token sets (check-web) and the
 //                CSP pinning of the built pages (check-web).
@@ -60,7 +62,8 @@
 //                path, check-wasm on that engine, check-wasm's random
 //                native-vs-WASM diff on a loader mutant (skipped when the
 //                engine or the release api_bridge is not built),
-//                check-unsafe on a mutant Rust tree. All under
+//                check-unsafe on a mutant Rust tree (incl. percent-core
+//                with its pre-M2c expect calls back). All under
 //                target/safety-eval/; dist/ is never touched.
 //   D.dist.*     when dist/ exists: no built file (and not the engine inside
 //                the single file) contains a local path of this machine, the
@@ -77,7 +80,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statS
 import { homedir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { CARGO_HOME, ENGINE_WASM, ROOT, findLocalPath } from "./lib/local-paths.mjs";
-import { forbidRootProblems, rustSourceProblems, wasmRootProblems } from "./lib/rust-hygiene.mjs";
+import { enginePanicProblems, forbidRootProblems, isEngineSource, rustSourceProblems, wasmRootProblems } from "./lib/rust-hygiene.mjs";
 import { JS_BANS, PHYSICAL_SIDES, lineEndingProblems, scriptProblems, styleProblems, templateProblems, TOKENS_FILE } from "./lib/web-hygiene.mjs";
 import { runShellSlices } from "./lib/eval-shell.mjs";
 import { catalogProblems, loadModules, usageProblems } from "./check-i18n.mjs";
@@ -326,6 +329,29 @@ for (const [name, line] of RUST_MUTANTS) {
   const problems = rustSourceProblems("crates/units-core/src/length.rs", lengthRs + "\n" + line + "\n");
   check(`D.mutant.rust.${name}`, problems.length > 0, problems[0] || `not refused: ${line}`);
 }
+// Engines never panic: each panicking call above the tests is refused; the
+// same call inside #[cfg(test)], in a test file or a non-engine crate is not.
+const percentRs = read(join(ROOT, "crates/percent-core/src/lib.rs"));
+const testsAt = percentRs.indexOf("#[cfg(test)]");
+check("D.control.rust.panic-engines-clean",
+  testsAt > 0 && enginePanicProblems("crates/percent-core/src/lib.rs", percentRs).length === 0 &&
+  isEngineSource("crates/percent-core/src/lib.rs") && isEngineSource("crates/pcalc-api/src/percent.rs") &&
+  !isEngineSource("crates/pcalc-store/src/docs.rs") && !isEngineSource("crates/percent-core/tests/golden_parity.rs"));
+const PANIC_MUTANTS = [
+  ["unwrap", "fn f(x: Option<u8>) -> u8 { x.unwrap() }"],
+  ["expect", 'fn f(s: &str) -> i32 { s.parse().expect("exponent") }'],
+  ["panic", 'fn f() { panic!("no") }'],
+  ["unreachable", "fn f() { unreachable!() }"],
+  ["todo", "fn f() { todo!() }"],
+  ["unimplemented", "fn f() { unimplemented!() }"]
+];
+for (const [name, line] of PANIC_MUTANTS) {
+  const above = percentRs.slice(0, testsAt) + line + "\n" + percentRs.slice(testsAt);
+  const below = percentRs + "\n" + line + "\n";
+  const problems = enginePanicProblems("crates/percent-core/src/lib.rs", above);
+  const testOnly = enginePanicProblems("crates/percent-core/src/lib.rs", below);
+  check(`D.mutant.rust.panic-${name}`, problems.length > 0 && testOnly.length === 0, problems[0] || `not refused: ${line}`);
+}
 
 // A minimal valid module: header + one custom section holding `payload`.
 function wasmWith(payload) {
@@ -450,6 +476,20 @@ mkdirSync(WORK, { recursive: true });
   writeFileSync(join(rustCopy, "crates/calc-core/src/lib.rs"), calcCore.replace(/^#!\[forbid\(unsafe_code\)\]\s*$/m, ""));
   const r2 = node(["scripts/check-unsafe.mjs", "--root", rustCopy]);
   check("D.e2e.check-unsafe-refuses-missing-forbid", r2.status === 1 && /missing #!\[forbid/.test(r2.out), lastLine(r2.out));
+  writeFileSync(join(rustCopy, "crates/calc-core/src/lib.rs"), calcCore);
+  // percent-core's js_exponential as it was before M2c: two expect calls.
+  const OLD_EXP = [
+    "    let (mantissa, exp) = s.split_once('e').expect(\"scientific notation\");",
+    "    let exp_num: i32 = exp.parse().expect(\"exponent\");",
+    "    let exp_sign = if exp_num >= 0 { '+' } else { '-' };",
+    "    format!(\"{sign}{mantissa}e{exp_sign}{}\", exp_num.unsigned_abs())",
+    "}"
+  ].join("\n");
+  const oldExp = percentRs.replace(/    match s\.split_once\('e'\) \{[\s\S]*?\n    \}\n\}/, () => OLD_EXP);
+  writeFileSync(join(rustCopy, "crates/percent-core/src/lib.rs"), oldExp);
+  const r3 = node(["scripts/check-unsafe.mjs", "--root", rustCopy]);
+  const refused = r3.out.split("\n").filter((l) => /percent-core\/src\/lib\.rs:\d+: panicking call/.test(l)).length;
+  check("D.e2e.check-unsafe-refuses-engine-expect", oldExp !== percentRs && r3.status === 1 && refused === 2, `${refused} refused; ${lastLine(r3.out)}`);
 }
 rmSync(WORK, { recursive: true, force: true });
 

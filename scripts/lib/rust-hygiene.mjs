@@ -37,6 +37,30 @@ export function wasmRootProblems(rel, text, expected = EXPECTED_WASM_EXPORTS) {
   return { problems, allows };
 }
 
+// Engines never panic on any input (AGENTS.md "Engine purity"): above the
+// first `#[cfg(test)]` line of each source file under crates/<engine>/src,
+// no unwrap(), expect(…), panic!, unreachable!, todo! or unimplemented!.
+// Like the unsafe rule it scans raw lines, comments included. (Indexing and
+// arithmetic are not covered; the no-panic fuzzing is the engines' own.)
+export const ENGINE_CRATES = Object.freeze(["date-core", "percent-core", "calc-num", "calc-core", "units-core", "graph-core", "pcalc-api"]);
+export const PANIC_USE = /\.unwrap\(\)|\.expect\(|\b(?:panic|unreachable|todo|unimplemented)!\s*[([{]/;
+
+export function enginePanicProblems(rel, text) {
+  const problems = [];
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*#\[cfg\(test\)\]/.test(lines[i])) break;
+    if (PANIC_USE.test(lines[i])) problems.push(`${rel}:${i + 1}: panicking call in engine code`);
+  }
+  return problems;
+}
+
+// True for an engine's non-test source file (crates/<engine>/src/**.rs).
+export function isEngineSource(rel) {
+  const m = /^crates\/([^/]+)\/src\/.+\.rs$/.exec(rel);
+  return Boolean(m && ENGINE_CRATES.includes(m[1]));
+}
+
 // Any Rust file: no unsafe block, fn, impl, trait or extern block, and no
 // allow(unsafe_code) attribute outside pcalc-wasm's root.
 export function rustSourceProblems(rel, text, { allowUnsafeAttr = false } = {}) {

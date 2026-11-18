@@ -208,13 +208,22 @@ fn js_to_fixed_2(x: f64) -> String {
     format!("{x:.2}")
 }
 
+/// Matches ECMAScript's exponential form (`1.5e+21`): Rust's `{:e}` writes
+/// `<mantissa>e<exponent>` with no sign on a positive exponent and no leading
+/// zeros, so only a `+` has to be added. Total: no parse, no panic. (The
+/// earlier version parsed the exponent with two `expect` calls; the output is
+/// byte-identical, which the golden suite and the unit test below prove.)
 fn js_exponential(x: f64) -> String {
     let sign = if x.is_sign_negative() { "-" } else { "" };
     let s = format!("{:e}", x.abs());
-    let (mantissa, exp) = s.split_once('e').expect("scientific notation");
-    let exp_num: i32 = exp.parse().expect("exponent");
-    let exp_sign = if exp_num >= 0 { '+' } else { '-' };
-    format!("{sign}{mantissa}e{exp_sign}{}", exp_num.unsigned_abs())
+    match s.split_once('e') {
+        Some((mantissa, exp)) => match exp.strip_prefix('-') {
+            Some(digits) => format!("{sign}{mantissa}e-{digits}"),
+            None => format!("{sign}{mantissa}e+{exp}"),
+        },
+        // `{:e}` of an f64 always contains an `e`; kept total all the same.
+        None => format!("{sign}{s}"),
+    }
 }
 
 /// Percentage change from `original_value` to `new_value`:
@@ -465,6 +474,44 @@ mod tests {
     #[test]
     fn engine_version_matches_crate_version() {
         assert_eq!(ENGINE_VERSION, env!("CARGO_PKG_VERSION"));
+    }
+
+    /// The total `js_exponential` writes what the old parse-and-expect
+    /// version wrote, including the negative-exponent branch that
+    /// `format_decimal` never reaches (it calls it only at >= 1e21).
+    #[test]
+    fn js_exponential_matches_the_parsing_version() {
+        fn old(x: f64) -> String {
+            let sign = if x.is_sign_negative() { "-" } else { "" };
+            let s = format!("{:e}", x.abs());
+            let Some((mantissa, exp)) = s.split_once('e') else {
+                return String::from("no e");
+            };
+            let Ok(exp_num) = exp.parse::<i32>() else {
+                return String::from("bad exponent");
+            };
+            let exp_sign = if exp_num >= 0 { '+' } else { '-' };
+            format!("{sign}{mantissa}e{exp_sign}{}", exp_num.unsigned_abs())
+        }
+        for x in [
+            1e21,
+            -1e21,
+            1.5e21,
+            123_456_789e20,
+            f64::MAX,
+            -f64::MAX,
+            0.0,
+            -0.0,
+            1e-7,
+            -2.5e-300,
+            f64::MIN_POSITIVE,
+            5e-324,
+        ] {
+            assert_eq!(js_exponential(x), old(x), "{x:e}");
+        }
+        assert_eq!(js_exponential(1.5e21), "1.5e+21");
+        assert_eq!(js_exponential(-1e-7), "-1e-7");
+        assert_eq!(format_decimal(1e22), "1e+22");
     }
 
     #[test]

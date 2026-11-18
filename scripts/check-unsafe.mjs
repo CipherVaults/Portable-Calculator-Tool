@@ -4,7 +4,9 @@
 // - pcalc-wasm has #![deny(unsafe_code)], and each #[allow(unsafe_code)] in
 //   it sits directly on an #[unsafe(no_mangle)] export attribute;
 // - no other Rust line anywhere uses an `unsafe` block, fn, impl, trait or
-//   extern block, and no other file allows unsafe_code.
+//   extern block, and no other file allows unsafe_code;
+// - no engine source (crates/<engine>/src, above its first #[cfg(test)])
+//   calls unwrap(), expect(…), panic!, unreachable!, todo! or unimplemented!.
 // The rules live in scripts/lib/rust-hygiene.mjs; scripts/safety-eval.mjs
 // (slice D) proves each one fires on a violating input.
 //
@@ -14,7 +16,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { forbidRootProblems, rustSourceProblems, wasmRootProblems } from "./lib/rust-hygiene.mjs";
+import { enginePanicProblems, forbidRootProblems, isEngineSource, rustSourceProblems, wasmRootProblems } from "./lib/rust-hygiene.mjs";
 
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const ROOT = rootArg(process.argv.slice(2));
@@ -58,18 +60,24 @@ function* rustFiles(dir) {
 }
 
 let files = 0;
+let engineFiles = 0;
 for (const top of ["crates", "src-tauri"]) {
   for (const path of rustFiles(join(ROOT, top))) {
     files++;
     const rel = relative(ROOT, path).split("\\").join("/");
-    problems.push(...rustSourceProblems(rel, readFileSync(path, "utf8"), { allowUnsafeAttr: rel === WASM_ROOT }));
+    const text = readFileSync(path, "utf8");
+    problems.push(...rustSourceProblems(rel, text, { allowUnsafeAttr: rel === WASM_ROOT }));
+    if (isEngineSource(rel)) {
+      engineFiles++;
+      problems.push(...enginePanicProblems(rel, text));
+    }
   }
 }
 
 for (const p of problems) console.log("FAIL " + p);
 console.log(
   problems.length === 0
-    ? `check-unsafe: OK (${files} Rust files; ${FORBID_ROOTS.length} forbid roots; pcalc-wasm has ${wasm.allows} allowed exports)`
+    ? `check-unsafe: OK (${files} Rust files; ${FORBID_ROOTS.length} forbid roots; pcalc-wasm has ${wasm.allows} allowed exports; ${engineFiles} engine files without panicking calls)`
     : "check-unsafe: FAILED"
 );
 process.exit(problems.length === 0 ? 0 : 1);

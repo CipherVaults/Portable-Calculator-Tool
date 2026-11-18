@@ -13,7 +13,7 @@ This file holds the project's persistent execution instructions for AI and human
 
 ## Project conventions
 
-- **Engine purity.** `date-core`, `percent-core`, `calc-num`, `calc-core`, `units-core` and `graph-core` are pure: `#![forbid(unsafe_code)]`, serde only (the one exception is `graph-core` -> `libm`), no clock, no time zone, no locale, no I/O, no panics on any input. "Today" and "now" are always inputs.
+- **Engine purity.** `date-core`, `percent-core`, `calc-num`, `calc-core`, `units-core` and `graph-core` are pure: `#![forbid(unsafe_code)]`, serde only (the one exception is `graph-core` -> `libm`), no clock, no time zone, no locale, no I/O, no panics on any input (`check-unsafe.mjs` refuses `unwrap()`, `expect(…)`, `panic!`, `unreachable!`, `todo!` and `unimplemented!` in their non-test code and in `pcalc-api`). "Today" and "now" are always inputs.
 - **One API.** Every surface calls `pcalc_api::call(op, req) -> String`. `pcalc-api` follows the engine rules but may use `serde_json` (it declares `float_roundtrip` itself so native and WASM parse floats identically). Ops are a closed list; unknown ops return `unknown_op`; per-op request caps return `request_too_large`.
 - **Unsafe and I/O live in two crates only.** `pcalc-wasm` (`#![deny(unsafe_code)]`, `allow` only on the `#[unsafe(no_mangle)]` exports) and `pcalc-store` (native file I/O, update check). Nothing else touches the file system or the network.
 - **Result envelope.** date-core's everywhere: `{"ok":"true","result":...}` / `{"ok":"false","error":{"code","field","message"}}`; camelCase JSON; `deny_unknown_fields` on every request struct.
@@ -69,7 +69,7 @@ node scripts/check-i18n.mjs                 # catalogs (keys, placeholders, CLDR
 node scripts/check-web.mjs                  # every theme has the same tokens and passes WCAG AA; every inline block of the built pages is CSP-pinned
 node scripts/browser-boot.mjs               # headless Edge (CDP, throwaway profiles): both web builds boot under their CSPs; rescue paths; the shell (drawer, bottom sheet, phone bottom bar, theme pre-paint, tab sync); 360/390/440 px and phone-landscape layouts incl. pseudo-locales (--shots <dir> saves PNGs); the Date tool (real taps on calendars, Move menu, a mouse drag, reload restore, Countdowns pane, themes, pseudo-locales; --date-only runs just that); the service-worker upgrade test
 node scripts/check-versions.mjs
-node scripts/check-unsafe.mjs
+node scripts/check-unsafe.mjs               # unsafe only where allowed; no panicking calls in engine code
 node scripts/safety-eval.mjs                # slices B and C (shell, Date tool and stores in a mini-DOM with a fake IndexedDB and a fixed clock, both adapters, real engine.wasm; the Date tests are scripts/lib/eval-date.mjs) and D (static hygiene), each rule with a mutant proof; and the built dist/
 cargo run -p portable-calculator-tool --locked -- --smoke-test
 ```
