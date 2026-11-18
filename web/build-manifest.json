@@ -1,0 +1,20 @@
+{
+  "appVersion": "0.1.0",
+  "scripts": [
+    "src/core/ns.js",
+    "@build",
+    "src/core/dom.js",
+    "src/core/i18n.js",
+    "src/core/bus.js",
+    "src/core/router.js",
+    "src/core/engine-web.js",
+    "src/platform/tauri.js",
+    "src/platform/web.js",
+    "src/boot.js"
+  ],
+  "styles": [
+    "styles/tokens.css",
+    "styles/components.css"
+  ],
+  "catalogs": ["en"]
+}

@@ -1,0 +1,84 @@
+/* Design tokens (plan B4, B5b). Every colour, border, radius and font in the
+   app comes from these custom properties; no other stylesheet may contain a
+   raw colour literal (scripts/build-web.mjs enforces it). A theme is one
+   [data-theme] block of values. M0 ships the Terminal theme (the default);
+   Daylight and Retro arrive in M9b. */
+
+:root,
+[data-theme="terminal"] {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --bg: #0E0F12;
+  --surface: #161822;
+  --surface-raised: #1c1f2b;
+
+  /* Accents */
+  --gold: #E9A715;
+  --green: #94C59A;
+  --danger: #F0857A;
+
+  /* Borders */
+  --border: #2a2d35;
+  --border-strong: #3a3f4c;
+
+  /* Text */
+  --text: #e2e4e8;
+  --text-strong: #eef2ff;
+  --text-soft: #cbd5e6;
+
+  /* Muted text */
+  --muted: #a3adc2;
+  --muted-2: #8f9aaf;
+  --muted-3: #6b768e;
+
+  /* Roles */
+  --accent: var(--gold);
+  --ok: var(--green);
+  --focus-ring: var(--gold);
+  --chip-bg: var(--surface-raised);
+  --chip-text: var(--text-soft);
+
+  /* Shape and type */
+  --radius: 0;
+  --border-width: 1px;
+  --font-mono: ui-monospace, "Cascadia Mono", "Cascadia Code", Consolas, "SFMono-Regular", Menlo, "Liberation Mono", monospace;
+  --font-ui: "Segoe UI", system-ui, -apple-system, "Noto Sans", "Noto Sans Arabic", "Noto Sans CJK SC", "Noto Sans CJK JP", "Noto Sans CJK KR", sans-serif;
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --target-min: 44px;
+  --transition: 120ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --transition: 0s;
+  }
+}
+
+/* Windows High Contrast and other forced-colour modes override every theme. */
+@media (forced-colors: active) {
+  :root,
+  [data-theme] {
+    --bg: Canvas;
+    --surface: Canvas;
+    --surface-raised: Canvas;
+    --gold: Highlight;
+    --green: CanvasText;
+    --danger: CanvasText;
+    --border: CanvasText;
+    --border-strong: CanvasText;
+    --text: CanvasText;
+    --text-strong: CanvasText;
+    --text-soft: CanvasText;
+    --muted: GrayText;
+    --muted-2: GrayText;
+    --muted-3: GrayText;
+    --focus-ring: Highlight;
+    --chip-bg: Canvas;
+    --chip-text: CanvasText;
+  }
+}

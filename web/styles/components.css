@@ -1,0 +1,146 @@
+/* Components (plan B4). Phone first: the base rules target a narrow screen,
+   wider layouts are added with min-width queries. Layout uses logical
+   properties only (inline/block), so RTL languages mirror for free.
+   Colours come from tokens.css only. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 100%;
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  min-block-size: 100vh;
+  padding-block: max(var(--space-4), env(safe-area-inset-top)) max(var(--space-4), env(safe-area-inset-bottom));
+  padding-inline: max(var(--space-4), env(safe-area-inset-left)) max(var(--space-4), env(safe-area-inset-right));
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.app {
+  inline-size: 100%;
+  max-inline-size: 48rem;
+  margin-inline: auto;
+  background: var(--surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+}
+
+.title {
+  margin: 0 0 var(--space-2);
+  font-family: var(--font-mono);
+  font-size: 1.25rem;
+  color: var(--accent);
+}
+
+.status {
+  margin: 0 0 var(--space-3);
+  color: var(--text-soft);
+  line-height: 1.5;
+}
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  min-block-size: 2rem;
+  margin: 0 0 var(--space-3);
+  padding-inline: var(--space-3);
+  background: var(--chip-bg);
+  color: var(--chip-text);
+  border: var(--border-width) solid var(--border-strong);
+  border-radius: var(--radius);
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+}
+
+.summary {
+  margin: 0 0 var(--space-3);
+  font-family: var(--font-mono);
+}
+
+.summary.pass {
+  color: var(--ok);
+}
+
+.summary.fail {
+  color: var(--danger);
+}
+
+.check-list,
+.versions {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.check {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--space-3);
+  min-block-size: var(--target-min);
+  padding-block: var(--space-2);
+  border-block-end: var(--border-width) solid var(--border);
+}
+
+.check-name {
+  color: var(--text);
+}
+
+.check-result {
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
+.check.pass .check-result {
+  color: var(--ok);
+}
+
+.check.fail .check-result {
+  color: var(--danger);
+}
+
+.versions {
+  margin-block-start: var(--space-4);
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+.versions li {
+  padding-block: var(--space-1);
+}
+
+.app-footer {
+  text-align: center;
+  color: var(--muted-2);
+  font-size: 0.8125rem;
+  font-family: var(--font-mono);
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+@media (min-width: 760px) {
+  .app {
+    padding: var(--space-6);
+  }
+
+  .title {
+    font-size: 1.5rem;
+  }
+}

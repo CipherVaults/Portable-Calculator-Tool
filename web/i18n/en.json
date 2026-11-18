@@ -1,0 +1,27 @@
+{
+  "_meta": { "language": "English", "dir": "ltr", "reviewed": true },
+  "app.title": "Portable Calculator Tool",
+  "app.status": "In development. This page checks that the engine works on this device.",
+  "app.footer": "Portable Calculator Tool v{version}",
+  "boot.checking": "Checking the engine…",
+  "boot.ready": "Engine ready",
+  "boot.failed": "The engine did not start",
+  "boot.passed": {
+    "one": "{count} check passed",
+    "other": "{count} checks passed"
+  },
+  "boot.platform.tauri": "Desktop app",
+  "boot.platform.web": "Web app",
+  "check.metaVersions": "Engine versions",
+  "check.dateDaysBetween": "Date: days from 2024-01-01 to 2024-12-31",
+  "check.percentChange": "Percent: change from 150 to 180",
+  "check.unknownOp": "Unknown operations are refused",
+  "check.requestTooLarge": "Oversized requests are refused",
+  "result.pass": "OK",
+  "result.fail": "Failed",
+  "versions.api": "API {version}",
+  "versions.engine": "{name} {version}",
+  "unsupported.title": "Unsupported browser",
+  "unsupported.body": "This browser cannot run the calculator engine (WebAssembly). Use Safari or iOS 16.4+, Chrome or Edge 97+, or Firefox 102+.",
+  "framed.body": "Portable Calculator Tool does not run inside a frame."
+}
