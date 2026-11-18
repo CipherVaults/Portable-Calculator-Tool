@@ -91,12 +91,24 @@ impl Op {
         std::str::from_utf8(name).ok().and_then(Op::parse)
     }
 
-    /// The largest raw request this op accepts, in bytes (plan B2). Every
-    /// M0 op is an engine op; the store-validation caps attach to their ops
-    /// in M3.
+    /// The largest raw request this op accepts, in bytes (plan B2's table).
+    ///
+    /// | Ops | Cap |
+    /// |---|---|
+    /// | `meta.*`, `date.*`, `percent.*` (and later `calc`, `prog`, `units`, `graph`) | [`CAP_ENGINE`] (64 KiB) |
+    /// | `settings.validate`, `state.validate`, `countdowns.validate` (M3) | [`crate::CAP_STORE`] (256 KiB) |
+    /// | `history.validate` (M3) | [`crate::CAP_HISTORY_VALIDATE`] (4.5 MiB) |
+    /// | `history.import_preview` (M3) | [`crate::CAP_IMPORT`] (8 MiB) |
+    ///
+    /// Every op that exists in M1 is an engine op; the larger caps attach
+    /// here when their ops arrive (`legacy.preview` was dropped with the
+    /// owner's "no legacy migration"). The match is exhaustive, so a new op
+    /// cannot compile without a cap.
     pub const fn request_cap(self) -> usize {
         match self {
-            Op::MetaVersions | Op::Date(_) | Op::Percent(_) => CAP_ENGINE,
+            Op::MetaVersions => CAP_ENGINE,
+            Op::Date(_) => CAP_ENGINE,
+            Op::Percent(_) => CAP_ENGINE,
         }
     }
 }

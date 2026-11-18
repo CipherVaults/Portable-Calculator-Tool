@@ -161,6 +161,45 @@ mod tests {
         assert_eq!(CAP_HISTORY_VALIDATE, 4_718_592);
     }
 
+    /// Plan B2: every op, at exactly its cap and at cap+1, with valid JSON
+    /// padding, garbage and invalid UTF-8. At the cap the request is parsed
+    /// (whatever it answers, it is never `request_too_large`); one byte more
+    /// is `request_too_large` before anything is looked at.
+    #[test]
+    fn every_op_is_capped_at_exactly_its_cap() {
+        let too_large = ApiError::REQUEST_TOO_LARGE.to_json();
+        let invalid = ApiError::INVALID_REQUEST.to_json();
+        for op in Op::ALL {
+            let name = op.name();
+            let cap = op.request_cap();
+            let json = |len: usize| format!("{{}}{}", " ".repeat(len - 2));
+            let at_cap = call(name, &json(cap));
+            assert_ne!(at_cap, too_large, "{name} at cap");
+            assert!(at_cap.starts_with(r#"{"ok":""#), "{name}: {at_cap}");
+            assert_eq!(call(name, &json(cap + 1)), too_large, "{name} cap+1");
+            assert_eq!(call(name, &json(cap - 1)), call(name, "{}"), "{name} cap-1");
+            for byte in [b'x', 0xFF] {
+                assert_eq!(
+                    call_bytes(name.as_bytes(), &vec![byte; cap]),
+                    invalid,
+                    "{name} {byte}"
+                );
+                assert_eq!(
+                    call_bytes(name.as_bytes(), &vec![byte; cap + 1]),
+                    too_large,
+                    "{name} {byte}"
+                );
+            }
+        }
+        // An unknown op stays unknown_op at every size, as on WASM.
+        for len in [0, CAP_ENGINE, CAP_ENGINE + 1, MAX_REQUEST_BYTES + 1] {
+            assert_eq!(
+                call_bytes(b"history.validate", &vec![b' '; len]),
+                ApiError::UNKNOWN_OP.to_json()
+            );
+        }
+    }
+
     #[test]
     fn invalid_utf8_and_bad_json_are_invalid_request() {
         let invalid = r#"{"ok":"false","error":{"code":"invalid_request","field":null,"message":"Invalid request."}}"#;
