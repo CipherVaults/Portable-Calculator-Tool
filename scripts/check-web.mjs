@@ -52,7 +52,15 @@ export const PAIRS = [
   ["--focus-ring-selected", "--selected-bg", 3, "focus ring inside the selected tab and the current link"],
   ["--bar-focus", "--bar-bg", 3, "focus ring in the top bar"],
   ["--control-border", "--surface", 3, "button and field boundaries"],
-  ["--control-border", "--button-bg", 3, "button boundaries"]
+  ["--control-border", "--button-bg", 3, "button boundaries"],
+  ["--text", "--cal-range-bg", 4.5, "calendar days inside a range"],
+  ["--muted", "--cal-range-bg", 4.5, "weekend days inside a range"],
+  ["--muted-2", "--cal-range-bg", 4.5, "other-month days inside a range"],
+  ["--cal-holiday", "--surface", 3, "the holiday marker"],
+  ["--cal-holiday", "--cal-range-bg", 3, "the holiday marker inside a range"],
+  ["--cal-today", "--surface", 3, "the today ring"],
+  ["--cal-today", "--cal-range-bg", 3, "the today ring inside a range"],
+  ["--finished-text", "--finished-bg", 4.5, "the finished countdown chip"]
 ];
 
 // --- parsing -------------------------------------------------------------

@@ -14,7 +14,8 @@
 //                               disabled elements but, like an older
 //                               browser, NOT inert ones, so the shell's own
 //                               focus trap is what keeps focus in a modal)
-//   window                      location.hash + hashchange,
+//   window                      location.hash + hashchange, a settable
+//                               clock (opts.now), page visibility,
 //                               history.replaceState, matchMedia (width and
 //                               prefers-color-scheme, both changeable),
 //                               localStorage, BroadcastChannel, navigator
@@ -347,6 +348,7 @@ class Document extends Node {
     this.childNodes = [this.documentElement];
     this.documentElement.parentNode = null;
     this.activeElement = this.body;
+    this.visibilityState = "visible";
     this.readyState = "complete";
     this.title = "";
   }
@@ -837,6 +839,22 @@ export function createWindow(opts = {}) {
       return { ok: true, status: 200, arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) };
     }
   });
+  win.Event = Event;
+  // A settable clock (opts.now = ms): Date.now() and new Date() read it;
+  // new Date(y, m, ...) and every other use stay real. Timers stay real.
+  const clock = { ms: opts.now === undefined ? null : Number(opts.now) };
+  if (clock.ms !== null) {
+    const Real = Date;
+    win.Date = class FakeDate extends Real {
+      constructor(...args) {
+        if (args.length === 0) super(clock.ms);
+        else super(...args);
+      }
+      static now() {
+        return clock.ms;
+      }
+    };
+  }
   if (!opts.noBroadcastChannel) win.BroadcastChannel = origin.hub.make();
   if (!opts.noWasm) win.WebAssembly = WebAssembly;
   win.window = win;
@@ -862,6 +880,21 @@ export function createWindow(opts = {}) {
       media.forEach((m, i) => {
         if (m.matches !== before[i]) for (const fn of m.listeners) fn({ matches: m.matches, media: m.media });
       });
+    },
+    // The settable clock (only with opts.now).
+    clock: {
+      now: () => clock.ms,
+      set: (ms) => {
+        clock.ms = ms;
+      },
+      advance: (ms) => {
+        clock.ms += ms;
+      }
+    },
+    // Page visibility as a browser reports it (visibilitychange on document).
+    setVisibility(state) {
+      doc.visibilityState = state;
+      doc.dispatchEvent(new Event("visibilitychange"));
     },
     setLight(light) {
       const before = media.map((m) => m.matches);

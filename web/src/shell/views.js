@@ -1,5 +1,6 @@
-// The views behind the routes (plan B5). M2a: every tool route is a
-// placeholder that names its milestone; Settings and About work.
+// The views behind the routes (plan B5). The Date tool (M2b) is real; the
+// other tool routes are placeholders that name their milestone; Settings
+// (with the Date calendar and layout sections) and About work.
 //
 // A view is render(ctx) -> [nodes]. ctx is the shell context (shell.js):
 // t, lang, digits, settings, state, outcomes, store, checks, build and the
@@ -114,7 +115,8 @@
         persistNote,
         storageNote,
         docRows(ctx)
-      ], { id: "settingsStorage" })
+      ], { id: "settingsStorage" }),
+      ...ns.dateSettings.panels(ctx)
     ];
     if (ctx.devTools) {
       out.push(panel(t("settings.dev"), [
@@ -175,6 +177,9 @@
   }
 
   function render(ctx, route) {
+    // A tool that leaves stops its timers and flushes what it must save.
+    if (route !== "date") ns.dateTool.leave();
+    if (route === "date") return ns.dateTool.render(ctx);
     if (route === "settings") return settings(ctx);
     if (route === "about") return about(ctx);
     return placeholder(ctx, route);

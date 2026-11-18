@@ -8,8 +8,11 @@
     "tabindex", "hidden", "disabled", "inert", "checked", "selected",
     "aria-label", "aria-labelledby", "aria-live", "aria-hidden", "aria-modal",
     "aria-describedby", "aria-expanded", "aria-controls", "aria-current",
-    "aria-pressed", "aria-selected", "aria-orientation",
-    "data-check", "data-state", "data-route", "data-tab", "data-doc", "data-value"
+    "aria-pressed", "aria-selected", "aria-orientation", "aria-disabled", "aria-atomic",
+    "aria-invalid", "min", "max", "step", "maxlength", "placeholder", "inputmode",
+    "autocomplete", "spellcheck",
+    "data-check", "data-state", "data-route", "data-tab", "data-doc", "data-value",
+    "data-card", "data-date", "data-focus-key"
   ]);
   // Links only ever point at an app route.
   const SAFE_HREF = /^#\/[a-z/]*$/;

@@ -25,6 +25,20 @@
 //                unreadable and Retry, engine down, quota, Start fresh, no
 //                IndexedDB = memory + banner, the banners in the UI, and the
 //                rescue view reading without creating the database
+//   B.date-*     the Date tool (scripts/lib/eval-date.mjs, ported from Date
+//                Calculator v1.2.0): the six cards' live results, an IPC
+//                race, the clickable calendars (click, keyboard with one
+//                tab stop, out-of-range days, the view following a click),
+//                the Business Days start/end pick, the card layout
+//                (collapse, keyboard and pointer reorder with the touch
+//                threshold, the Move menu, Reset), the calendar settings,
+//                the history hook and the desktop adapter
+//   C.countdowns-* the countdown list in the "countdowns" document: launch
+//                restore ("restored", then counting down), finished while
+//                closed (finishedSeenAtMs written once, only when visible),
+//                no write on a tick, input or page hide, the cap of 20 and
+//                Delete, a newer document never written, another tab's
+//                change adopted without writing
 //   B/C.mutant.* each important rule broken by a one-line mutant that the
 //                same test must catch
 // Slice D proves that each static rule actually fires, so a passing build

@@ -195,6 +195,7 @@
     ctx.retry = async (name) => {
       const o = await store.load(name);
       ctx.outcomes[name] = o;
+      if (name === "countdowns") await ns.countdowns.reload();
       if (o.status === "ok" && (name === "settings" || name === "state")) {
         ctx[name] = p.fromOutcome(o, name === "settings" ? p.DEFAULT_SETTINGS : p.DEFAULT_STATE);
         if (name === "settings") ns.theme.apply(ctx.settings.appearance.theme);
@@ -214,6 +215,7 @@
       } else {
         ctx.outcomes[name] = { name, status: "empty", readOnly: false, doc: null, schemaVersion: null, backup: r.backup || null, field: null };
         if (name === "settings" || name === "state") await save(name);
+        if (name === "countdowns") await ns.countdowns.reload();
       }
       if (ctx.shell) {
         ctx.shell.renderBanners();
@@ -334,6 +336,26 @@
       const title = byId("routeTitle");
       if (ctx.shell.route() !== r || !title || title.textContent !== t(ns.views.titleKey(r))) fails.push("route " + r);
     }
+    // The Date tool through this adapter's engine: a live result and a
+    // mini calendar grid of 42 days.
+    ctx.shell.navigate("date");
+    await nextFrame();
+    const put = (id, v) => {
+      const n = byId(id);
+      if (!n) return;
+      n.value = v;
+      n.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    put("betweenStart", "2024-01-01");
+    put("betweenEnd", "2024-12-31");
+    put("infoDate", "2024-02-29");
+    const liveText = () => (byId("betweenLive") ? byId("betweenLive").textContent : "");
+    for (let i = 0; i < 40 && !/365/.test(liveText()); i++) await nextFrame();
+    const cells = byId("infoCalGrid") ? byId("infoCalGrid").children.length : 0;
+    if (!/365/.test(liveText()) || cells !== 42) fails.push("date tool live=" + liveText() + " cells=" + cells);
+    put("betweenStart", "");
+    put("betweenEnd", "");
+    put("infoDate", "");
     for (const pref of ["daylight", "retro", "terminal"]) {
       await ctx.setTheme(pref);
       const bg = getComputedStyle(root).getPropertyValue("--bg").trim().toUpperCase();
@@ -364,7 +386,7 @@
     const saved = await ctx.store.save("countdowns", countdowns);
     const back = await ctx.store.load("countdowns");
     if (!saved.ok || back.status !== "ok" || JSON.parse(back.doc).items[0].label !== "Smoke") fails.push("round trip countdowns");
-    return { ok: fails.length === 0, text: "shell " + (fails.length === 0 ? "ok (" + ns.router.ROUTES.length + " routes, 3 themes + System, 3 store round trips)" : "FAILED: " + fails.join(", ")) };
+    return { ok: fails.length === 0, text: "shell " + (fails.length === 0 ? "ok (" + ns.router.ROUTES.length + " routes, the Date tool live, 3 themes + System, 3 store round trips)" : "FAILED: " + fails.join(", ")) };
   }
 
   async function measureIpc(platform) {
@@ -442,6 +464,7 @@
     ns.theme.watchSystem();
     ctx.applyLanguage();
     listen(ctx);
+    await ns.countdowns.init(ctx);
 
     // The last route reopens on launch unless the address names one.
     if (!ns.router.explicit()) {

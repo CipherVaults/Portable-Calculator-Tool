@@ -249,7 +249,12 @@
         b.setAttribute("tabindex", on ? "0" : "-1");
       }
       nodes.panePanel.setAttribute("aria-labelledby", "paneTab-" + tab);
-      show(nodes.panePanel, [el("p", { className: "status", text: t()("pane.empty." + tab) })]);
+      // Countdowns: the live list (tools/date/countdowns.js).
+      if (tab === "countdowns") ns.countdowns.renderPane(nodes.panePanel);
+      else {
+        ns.countdowns.leavePane();
+        show(nodes.panePanel, [el("p", { className: "status", text: t()("pane.empty." + tab) })]);
+      }
       if (ctx.state.pane.tab !== tab) {
         ctx.state.pane.tab = tab;
         if (!opts || opts.save !== false) ctx.saveState();
@@ -281,6 +286,8 @@
       flag(nodes.pane, "hidden", !open);
       nodes.paneToggle.setAttribute("aria-expanded", open ? "true" : "false");
       nodes.shell.setAttribute("data-pane", open ? "open" : "closed");
+      // An open pane's countdowns tick again at once.
+      if (open) ns.countdowns.tick();
       if (ctx.state.pane.open !== open) {
         ctx.state.pane.open = open;
         ctx.saveState();

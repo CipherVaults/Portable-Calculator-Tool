@@ -186,7 +186,10 @@
       let msg = own(primary, key) ? primary[key] : own(fallback, key) ? fallback[key] : undefined;
       if (msg === undefined) return key;
       if (typeof msg === "object" && msg !== null) {
-        const cat = pluralCategory(base, params ? params.count : undefined);
+        // `plural` (a number) picks the form when {count} shows formatted
+        // text (grouped digits, Arabic-Indic digits, a dom.value mark).
+        const by = params && own(params, "plural") ? params.plural : params ? params.count : undefined;
+        const cat = pluralCategory(base, by);
         msg = own(msg, cat) ? msg[cat] : msg.other;
       }
       return typeof msg === "string" ? fill(msg, params, lang) : key;

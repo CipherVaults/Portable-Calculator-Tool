@@ -56,6 +56,14 @@
   --banner-bg: #2b2410;
   --banner-text: #f5d58a;
 
+  /* Calendars and countdowns (B5b: per-theme markers): the shading of a
+     range, the holiday marker, the today ring and the finished chip. */
+  --cal-range-bg: #1d2a22;
+  --cal-holiday: var(--gold);
+  --cal-today: var(--text-strong);
+  --finished-bg: var(--gold);
+  --finished-text: var(--bg);
+
   /* Chrome: the top bar and the window title strips (Retro: navy). */
   --bar-bg: var(--surface);
   --bar-bg-end: var(--surface);
@@ -131,6 +139,12 @@
   --banner-bg: #f6ead0;
   --banner-text: #4d3500;
 
+  --cal-range-bg: #e3eee4;
+  --cal-holiday: #8A5F00;
+  --cal-today: var(--text-strong);
+  --finished-bg: #8A5F00;
+  --finished-text: #FFFFFF;
+
   --bar-bg: var(--surface);
   --bar-bg-end: var(--surface);
   --bar-text: var(--text-strong);
@@ -190,6 +204,12 @@
   --banner-bg: #FFFFE1;
   --banner-text: #000000;
 
+  --cal-range-bg: #FFFFFF;
+  --cal-holiday: #800000;
+  --cal-today: #000000;
+  --finished-bg: #000080;
+  --finished-text: #FFFFFF;
+
   --bar-bg: #000080;
   /* B5b's #1084D0 is 4.0:1 under white text; darkened to pass AA. */
   --bar-bg-end: #0f78bd;
@@ -248,6 +268,11 @@
     --selected-text: HighlightText;
     --banner-bg: Canvas;
     --banner-text: CanvasText;
+    --cal-range-bg: Canvas;
+    --cal-holiday: Highlight;
+    --cal-today: CanvasText;
+    --finished-bg: Highlight;
+    --finished-text: HighlightText;
     --bar-bg: Canvas;
     --bar-bg-end: Canvas;
     --bar-text: CanvasText;

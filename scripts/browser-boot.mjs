@@ -76,6 +76,15 @@
 //              No formatted value (.num) wraps and no word of a title, tab
 //              or nav label breaks mid-word; a clamped title is never cut.
 //              With --shots <dir> each case is saved as a PNG screenshot
+//   date       the Date tool at 390 px (and 360, 440, 1280): every card
+//              filled and looked at, a real tap on Business Days calendar
+//              days (start, then end), arrow keys with one tab stop, the
+//              Move menu from a tap, a real mouse drag of a card, every
+//              card collapsed, the layout and the countdown restored after
+//              a reload, Settings > Reset, the Countdowns pane ticking,
+//              the Egypt preset (Fri/Sat, Hijri offset), all three themes
+//              and both pseudo-locales; each case is a layout check (and a
+//              screenshot with --shots). --date-only runs just this group
 //   upgrade    build N+1 (a copy of web/ with one changed byte, built into
 //              target/browser-boot/) on the same origin as build N: boot N
 //              and let its service worker take over, switch the server to
@@ -95,6 +104,7 @@
 //
 //   node scripts/browser-boot.mjs [--dist <dir>] [--edge <path>] [--runs N]
 //                                 [--json <path>] [--shots <dir>] [--skip-upgrade]
+//                                 [--date-only]
 //
 // Edge: --edge, else $PCALC_EDGE, else the usual install paths. WebKit
 // (Safari/iOS) and Gecko (Firefox) are not driven here; they stay manual
@@ -125,6 +135,7 @@ function parseArgs(argv) {
     if (a === "--dist") opts.dist = resolve(argv[++i] || fail("--dist needs a path"));
     else if (a === "--shots") opts.shots = resolve(argv[++i] || fail("--shots needs a path"));
     else if (a === "--skip-upgrade") opts.upgrade = false;
+    else if (a === "--date-only") opts.dateOnly = true;
     else if (a === "--edge") opts.edge = resolve(argv[++i] || fail("--edge needs a path"));
     else if (a === "--json") opts.json = resolve(argv[++i] || fail("--json needs a path"));
     else if (a === "--runs") {
@@ -360,6 +371,11 @@ async function openPage(edge, url, { keepOpen = false, preScripts = [] } = {}) {
       }
       await new Promise((r) => setTimeout(r, 60));
     },
+    // A mouse event at (x, y) (pressed and moved carry the left button).
+    async mouse(type, x, y) {
+      await cdp.send("Input.dispatchMouseEvent", { type, x, y, button: "left", buttons: type === "mouseReleased" ? 0 : 1, clickCount: type === "mouseMoved" ? 0 : 1 }, sessionId);
+      await new Promise((r) => setTimeout(r, 16));
+    },
     async screenshot(path) {
       const { data } = await cdp.send("Page.captureScreenshot", { format: "png" }, sessionId);
       mkdirSync(dirname(path), { recursive: true });
@@ -377,7 +393,7 @@ async function openPage(edge, url, { keepOpen = false, preScripts = [] } = {}) {
           boot = null; // navigation in progress
         }
         if (boot && boot !== "checking") break;
-        if (Date.now() > deadline) throw new Error(`no data-boot verdict within ${BOOT_TIMEOUT_MS} ms at ${target}`);
+        if (Date.now() > deadline) throw new Error(`no data-boot verdict within ${BOOT_TIMEOUT_MS} ms at ${target}: ${describeLogs(logs)}`);
         await new Promise((r) => setTimeout(r, 25));
       }
       const wallMs = performance.now() - started;
@@ -548,7 +564,8 @@ function phoneBarProblem(b) {
 const LAYOUT = `(() => {
   const vw = document.documentElement.clientWidth;
   const name = (n) => n.tagName.toLowerCase() + (n.id ? "#" + n.id : "") + (n.className && typeof n.className === "string" ? "." + n.className.trim().split(/\\s+/).join(".") : "");
-  const shown = (n) => { const r = n.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(n).visibility !== "hidden"; };
+  // Visually hidden text for screen readers (.sr-only) is not laid out for the eye.
+  const shown = (n) => { const r = n.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(n).visibility !== "hidden" && !n.closest(".sr-only"); };
   const out = { vw, vh: innerHeight, scrollWidth: document.documentElement.scrollWidth, outside: [], small: [], clipped: [], broken: [], dir: document.documentElement.dir, theme: document.documentElement.dataset.theme };
   for (const n of document.querySelectorAll("body *")) {
     if (!shown(n)) continue;
@@ -836,7 +853,7 @@ async function layoutChecks(edgePath, url, shots) {
     await tab.key("Escape");
     for (const width of [360, 390, 440]) {
       await tab.viewport(width, 800);
-      for (const route of ["standard", "settings", "about", "converter/temperature"]) {
+      for (const route of ["standard", "date", "settings", "about", "converter/temperature"]) {
         await goRoute(tab, route);
         await record(`${width}.${route.replace("/", "-")}`, phoneBar);
       }
@@ -957,6 +974,186 @@ async function layoutChecks(edgePath, url, shots) {
       await tab.key("Escape");
     }
     expect("layout.no-console-errors", errorCount(tab.logs) === 0, describeLogs(tab.logs));
+    await tab.close();
+  } finally {
+    await edge.close();
+  }
+  return saved;
+}
+
+// ---------------------------------------------------------------------------
+// The Date tool (M2b) in a real browser at phone widths
+// ---------------------------------------------------------------------------
+
+// Sets a field's value as typing would (input, then change).
+const PUT = (id, value) => `(() => { const n = document.getElementById(${JSON.stringify(id)}); n.value = ${JSON.stringify(value)};
+  n.dispatchEvent(new Event("input", { bubbles: true })); n.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`;
+const TEXT = (id) => `(document.getElementById(${JSON.stringify(id)}) || { textContent: null }).textContent`;
+const ORDER = `[...document.getElementById("dateCards").children].map((c) => c.dataset.card).join(",")`;
+const CARDS = ["between", "add", "business", "age", "info", "countdown"];
+
+async function dateChecks(edgePath, url, shots) {
+  const edge = await launchEdge(edgePath, []);
+  const saved = [];
+  try {
+    const { tab } = await openPage(edge, url + "#/date", { keepOpen: true });
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const shot = async (id) => {
+      if (!shots) return;
+      const path = join(shots, `date-${id.replace(/[^a-z0-9-]+/gi, "_")}.png`);
+      await tab.screenshot(path);
+      saved.push(path);
+    };
+    const record = async (id, extra = () => null) => {
+      const l = await json(tab, LAYOUT);
+      const more = await extra(l);
+      const ok = l.scrollWidth <= l.vw && l.outside.length === 0 && l.small.length === 0 && l.clipped.length === 0 && l.broken.length === 0 && !more;
+      expect(`date.layout.${id}`, ok, JSON.stringify({ scrollWidth: l.scrollWidth, vw: l.vw, outside: l.outside.slice(0, 4), small: l.small.slice(0, 4), clipped: l.clipped.slice(0, 4), broken: l.broken.slice(0, 4), more }));
+      await shot(id);
+    };
+    // The element's top just under the sticky top bar.
+    const scrollTo = (sel) => tab.evaluate(`(() => { const n = document.querySelector(${JSON.stringify(sel)}); n.scrollIntoView({ block: "start" });
+      scrollBy(0, -(document.getElementById("topbar").getBoundingClientRect().height + 8)); return true; })()`);
+    const phoneBar = async () => phoneBarProblem(await json(tab, BAR(true)));
+
+    await tab.viewport(390, 844);
+    await goRoute(tab, "date");
+    await waitFor(tab, `document.getElementById("infoCalGrid") && document.getElementById("infoCalGrid").children.length === 42`);
+    await record("390.top", phoneBar);
+    // Fill every card the way a person would, then look at each.
+    for (const [id, v] of [["betweenStart", "2024-01-01"], ["betweenEnd", "2024-12-31"], ["addStart", "2024-01-31"], ["addMonths", "1"],
+      ["bizStart", "2026-12-21"], ["bizEnd", "2027-01-08"], ["ageBirth", "1990-02-28"], ["infoDate", "2026-12-25"], ["cdLabel", "Launch"], ["cdTarget", "2030-01-01"], ["cdTime", "09:30"]]) {
+      await tab.evaluate(PUT(id, v));
+    }
+    await waitFor(tab, `${TEXT("countdownLive")} !== "→ —" && ${TEXT("businessLive")} !== "→ —" && ${TEXT("infoLive")} !== "→ —"`, 4000);
+    const lives = await json(tab, `["betweenLive", "addLive", "businessLive", "ageLive", "infoLive", "countdownLive"].map((id) => document.getElementById(id).textContent)`);
+    expect("date.live-results", lives[0] === "→ 365 days" && lives[1] === "→ 2024-02-29 (Thursday)" && /business days/.test(lives[2]) && /years/.test(lives[3]) && /Friday/.test(lives[4]) && /\d/.test(lives[5]), JSON.stringify(lives));
+    await tab.evaluate(`document.activeElement.blur(); true`);
+    for (const key of CARDS) {
+      await scrollTo(`#card-${key}`);
+      await record(`390.${key}`, phoneBar);
+    }
+    // The business calendar: a real tap sets the start, the next tap the end.
+    await scrollTo("#bizCalGrid");
+    await tab.evaluate(`document.getElementById("bizPickStart").click(); true`);
+    const cell = (iso) => `#bizCalGrid button[data-date="${iso}"]`;
+    await tab.tap(cell("2026-12-22"));
+    await waitFor(tab, `document.getElementById("bizStart").value === "2026-12-22"`);
+    await tab.tap(cell("2026-12-30"));
+    await waitFor(tab, `document.getElementById("bizEnd").value === "2026-12-30"`);
+    const picks = await json(tab, `({ start: document.getElementById("bizStart").value, end: document.getElementById("bizEnd").value,
+      marked: [...document.querySelectorAll("#bizCalGrid .pick-start, #bizCalGrid .pick-end")].map((n) => n.dataset.date + ":" + n.getAttribute("aria-pressed")).join(","),
+      hint: document.getElementById("bizCalHint").textContent, cell: (() => { const r = document.querySelector(${JSON.stringify(cell("2026-12-22"))}).getBoundingClientRect(); return [Math.round(r.width), Math.round(r.height)]; })() })`);
+    expect("date.calendar-tap-picks", picks.start === "2026-12-22" && picks.end === "2026-12-30" && picks.marked === "2026-12-22:true,2026-12-30:true" && picks.hint === "Next click sets the start date." && picks.cell[1] >= 44 && picks.cell[0] >= 40, JSON.stringify(picks));
+    // Arrow keys move focus (one tab stop) without selecting.
+    await tab.evaluate(`document.querySelector(${JSON.stringify(cell("2026-12-30"))}).focus(); true`);
+    await tab.key("ArrowRight");
+    await tab.key("ArrowDown");
+    const keys = await json(tab, `({ focus: document.activeElement.dataset.date, stops: document.querySelectorAll("#bizCalGrid [tabindex='0']").length, end: document.getElementById("bizEnd").value })`);
+    expect("date.calendar-keyboard", keys.focus === "2027-01-07" && keys.stops === 1 && keys.end === "2026-12-30", JSON.stringify(keys));
+    await record("390.business-picked", phoneBar);
+
+    // The Move menu: a tap on a handle opens Move up / Move down / Done.
+    await scrollTo("#card-age");
+    await tab.tap("#card-age .card-handle");
+    const menu = await json(tab, `(() => { const m = document.getElementById("cardMoveMenu"); const b = [...m.querySelectorAll("button")].map((x) => Math.round(x.getBoundingClientRect().height));
+      return { open: !m.hidden, inAge: document.getElementById("card-age").contains(m), heights: b, focus: document.activeElement.dataset.value }; })()`);
+    expect("date.move-menu-tap", menu.open && menu.inAge && menu.heights.every((h) => h >= 44) && menu.focus === "up", JSON.stringify(menu));
+    await record("390.move-menu", phoneBar);
+    await tab.tap("#cardMoveMenu button[data-value=up]");
+    const moved = await tab.evaluate(ORDER);
+    expect("date.move-menu-moves", moved === "between,add,age,business,info,countdown", moved);
+    await tab.tap("#cardMoveMenu button[data-value=done]");
+    // A real mouse drag on a handle (pointer events): Countdown to the top.
+    for (const key of CARDS) await tab.evaluate(`document.querySelector("#card-${key} .card-collapse").click(); true`);
+    await tab.evaluate(`scrollTo(0, 0); true`);
+    const drag = await json(tab, `(() => { const r = document.querySelector("#card-countdown .card-handle").getBoundingClientRect(); const t = document.getElementById("card-between").getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2, to: t.top + 6 }; })()`);
+    await tab.mouse("mousePressed", drag.x, drag.y);
+    for (let step = 1; step <= 12; step++) await tab.mouse("mouseMoved", drag.x, drag.y + (drag.to - drag.y) * (step / 12));
+    await tab.mouse("mouseReleased", drag.x, drag.to);
+    await wait(150);
+    const dragged = await tab.evaluate(ORDER);
+    const leftover = await tab.evaluate(`document.querySelectorAll(".is-dragging, .drop-before, .drop-after").length`);
+    expect("date.pointer-drag-reorders", dragged.startsWith("countdown,") && leftover === 0, `${dragged} leftover=${leftover}`);
+    await record("390.all-collapsed", phoneBar);
+    await wait(200);
+    const stored = await json(tab, IDB_GET("settings"));
+    const date = stored ? JSON.parse(stored).date : null;
+    expect("date.layout-persisted", Boolean(date && date.cardOrder[0] === "countdown" && date.collapsedCards.length === 6), JSON.stringify(date && { order: date.cardOrder, collapsed: date.collapsedCards }));
+    // Reload: the order, the collapsed set and the countdown come back.
+    await tab.navigate(url + "#/date");
+    await waitFor(tab, `document.getElementById("dateCards") && document.getElementById("cdSelect") && document.getElementById("cdTarget").value !== ""`);
+    const after = await json(tab, `({ order: ${ORDER}, collapsed: document.querySelectorAll(".tool-card.is-collapsed").length, label: document.getElementById("cdLabel").value, target: document.getElementById("cdTarget").value })`);
+    expect("date.reload-restores", after.order.startsWith("countdown,") && after.collapsed === 6 && after.label === "Launch" && after.target === "2030-01-01", JSON.stringify(after));
+    // Settings > Layout > Reset.
+    await goRoute(tab, "settings");
+    await tab.evaluate(`document.getElementById("dateLayoutResetBtn").click(); true`);
+    await wait(150);
+    await goRoute(tab, "date");
+    const reset = await json(tab, `({ order: ${ORDER}, collapsed: document.querySelectorAll(".tool-card.is-collapsed").length })`);
+    expect("date.layout-reset", reset.order === CARDS.join() && reset.collapsed === 0, JSON.stringify(reset));
+
+    // The Countdowns pane: the saved countdown, ticking.
+    await tab.key("h", { ctrl: true });
+    await tab.tap("#paneTab-countdowns");
+    await waitFor(tab, `document.querySelector(".cd-row-clock") && /\\d/.test(document.querySelector(".cd-row-clock").textContent)`);
+    const c1 = await tab.evaluate(`document.querySelector(".cd-row-clock").textContent`);
+    await wait(1300);
+    const c2 = await tab.evaluate(`document.querySelector(".cd-row-clock").textContent`);
+    const chip = await tab.evaluate(`document.querySelector(".cd-row .cd-phase").textContent`);
+    expect("date.pane-countdowns-tick", c1 !== c2 && /restored|counting down/.test(chip), `${c1} -> ${c2} chip=${chip}`);
+    await record("390.pane-countdowns");
+    await tab.key("Escape");
+
+    // Settings: the Date sections, Egypt (Fri/Sat and the Hijri offset).
+    await goRoute(tab, "settings");
+    await tab.evaluate(`(() => { const s = document.getElementById("holidayPresetSelect"); s.value = "eg"; s.dispatchEvent(new Event("change")); return true; })()`);
+    await waitFor(tab, `!document.getElementById("hijriBlock").hidden && document.querySelectorAll("#holidayPreviewList .holiday-row").length > 5`, 4000);
+    const eg = await json(tab, `(async () => JSON.parse(await (${IDB_GET("settings")})).date.calendar.weekend.join(","))()`);
+    expect("date.settings-egypt-weekend", eg === "5,6", eg);
+    await scrollTo("#settingsDateWeekend");
+    await record("390.settings-weekend", phoneBar);
+    await scrollTo("#settingsDateHolidays");
+    await record("390.settings-holidays", phoneBar);
+    await scrollTo("#settingsDateCustom");
+    await record("390.settings-custom", phoneBar);
+    await tab.evaluate(`(() => { const s = document.getElementById("holidayPresetSelect"); s.value = "none"; s.dispatchEvent(new Event("change")); return true; })()`);
+    await wait(300);
+
+    // 360 and 440 px, the other themes and the pseudo-locales.
+    for (const width of [360, 440]) {
+      await tab.viewport(width, 800);
+      await goRoute(tab, "date");
+      await scrollTo("#card-business");
+      await record(`${width}.business`, phoneBar);
+      await scrollTo("#card-countdown");
+      await record(`${width}.countdown`, phoneBar);
+    }
+    await tab.viewport(390, 844);
+    for (const theme of ["daylight", "retro", "terminal"]) {
+      await pickTheme(tab, theme);
+      await goRoute(tab, "date");
+      await scrollTo("#bizCalGrid");
+      await record(`390.${theme}-calendar`, phoneBar);
+    }
+    for (const pseudo of ["en-XA", "ar-XB"]) {
+      await pickPseudo(tab, pseudo);
+      await goRoute(tab, "date");
+      await tab.evaluate(`scrollTo(0, 0); true`);
+      await record(`390.${pseudo}-top`, phoneBar);
+      await scrollTo("#card-business");
+      await record(`390.${pseudo}-business`, phoneBar);
+      await scrollTo("#card-countdown");
+      await record(`390.${pseudo}-countdown`, phoneBar);
+    }
+    await pickPseudo(tab, "off");
+    // Wider: two columns inside a card at 1280 px (drawer pinned).
+    await tab.viewport(1280, 900, false);
+    await goRoute(tab, "date");
+    await scrollTo("#card-business");
+    await record("1280.business");
+    expect("date.no-console-errors", errorCount(tab.logs) === 0, describeLogs(tab.logs));
     await tab.close();
   } finally {
     await edge.close();
@@ -1116,6 +1313,16 @@ async function main() {
   const edgePath = findEdge(opts.edge);
   const timing = {};
 
+  if (opts.dateOnly) {
+    const server = await startStaticServer({ dir: join(opts.dist, "web") });
+    let shots = [];
+    try {
+      shots = await dateChecks(edgePath, server.url, opts.shots);
+    } finally {
+      await server.close();
+    }
+    return report(opts, "Edge", edgePath, timing, info, engineSha, shots);
+  }
   const good = await startStaticServer({ dir: join(opts.dist, "web") });
   const tampered = await startStaticServer({
     dir: join(opts.dist, "web"),
@@ -1202,8 +1409,17 @@ async function main() {
   } finally {
     await layoutServer.close();
   }
+  const dateServer = await startStaticServer({ dir: join(opts.dist, "web") });
+  try {
+    screenshots = screenshots.concat(await dateChecks(edgePath, dateServer.url, opts.shots));
+  } finally {
+    await dateServer.close();
+  }
   if (opts.upgrade) await upgradeChecks(edgePath, opts.dist, info);
+  return report(opts, browser, edgePath, timing, info, engineSha, screenshots);
+}
 
+function report(opts, browser, edgePath, timing, info, engineSha, screenshots) {
   const failed = results.filter((r) => r.status === "fail");
   for (const r of results) console.log(`${r.status === "pass" ? "PASS" : "FAIL"} ${r.id}${r.status === "pass" ? "" : ": " + r.detail}`);
   console.log(`browser: ${browser} (${edgePath}), headless, throwaway profile, ${PHONE.width}x${PHONE.height} phone viewport`);
@@ -1221,4 +1437,8 @@ async function main() {
   process.exit(failed.length === 0 ? 0 : 1);
 }
 
-main().catch((err) => fail(err && err.stack ? err.stack : String(err)));
+main().catch((err) => {
+  // What passed and failed before the error, then the error.
+  for (const r of results) console.log(`${r.status === "pass" ? "PASS" : "FAIL"} ${r.id}${r.status === "pass" ? "" : ": " + r.detail}`);
+  fail(err && err.stack ? err.stack : String(err));
+});
