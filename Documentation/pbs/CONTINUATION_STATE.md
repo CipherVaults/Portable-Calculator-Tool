@@ -5,7 +5,7 @@
 - Record type: recoverable working checkpoint (PBS v1.1).
 - Goal: build Portable Calculator Tool v1.0.0 per the approved [plan](../specs/5-%20PORTABLE_CALCULATOR_PLAN.md), Part B (milestones in the [Roadmap](../3-%20ROADMAP.md)).
 - Recorded at: 2026-11-18 · writer: Claude Code (Opus 5.5) · next integrating owner: the coordinating session or any successor executor.
-- Mission state: **M0 implemented and verified** (Ledger E-01, E-02); GitHub CI run 44254904073 green on `482e52d` (all three jobs). The M0 review fixes and the D-slice (E-03) **M1** (E-04: `0398fd0`, `2b9e412`, `f2a60d9`, `84c7ad9`, `fa1f746`, `605147c`) and **M2a** (E-05: `adae5b2`, `db6e554`, `e56f996`, `ac10bdb`, `0673f1b`, `2be8557`, plus the records commit) are committed on local `dev` and verified locally; they reach GitHub when the coordinator pushes `dev`. Remote: `origin` = `CipherVaults/Portable-Calculator-Tool` (public), created on the owner's yes on 2026-11-18; `origin/main` = `659311e` has no workflows.
+- Mission state: **M0 implemented and verified** (Ledger E-01, E-02); GitHub CI run 44254904073 green on `482e52d` (all three jobs). The M0 review fixes and the D-slice (E-03) **M1** (E-04: `0398fd0`, `2b9e412`, `f2a60d9`, `84c7ad9`, `fa1f746`, `605147c`) and **M2a** (E-05: `adae5b2`, `db6e554`, `e56f996`, `ac10bdb`, `0673f1b`, `2be8557`, plus the records commit) and the **M1/M2a review fixes** (E-06: `a4ee029`, `0118df6`, `b2e2050`, plus the records commit) are committed on local `dev` and verified locally; they reach GitHub when the coordinator pushes `dev`. Remote: `origin` = `CipherVaults/Portable-Calculator-Tool` (public), created on the owner's yes on 2026-11-18; `origin/main` = `659311e` has no workflows.
 - Latest authorization: [Current State — Current authority](CURRENT_STATE.md#current-authority).
 
 ## Recovery inventory
@@ -27,6 +27,7 @@
 | R12 | M2a: phone-first shell, themes (3 token sets, pre-paint), i18n infrastructure (en catalog, plurals for 12 languages, pseudo-locales, format tables), IndexedDB store, service worker, desktop wiring | implemented-verified locally | E-05: check-i18n, check-web (AA), debug and release smoke; translated catalogs are M9a, theme polish M9b |
 | R13 | M2a: browser-boot shell, layout and upgrade tests | implemented-verified locally (Chromium only) | E-05: 117 checks incl. 48 phone layout cases with screenshots, pre-paint without a flash, tab sync, service-worker upgrade online and offline |
 | R14 | M2a: safety-eval slices B and C (mini-DOM, fake IndexedDB, both adapters) | implemented-verified locally | E-05: 172 checks, all 16 B/C mutants caught; slice E is M9 |
+| R15 | M1/M2a review fixes (20 findings) | implemented-verified locally (19 fixed); 1 open for the owner | E-06: desktop backups survive a clock set back and a newer document is never reset (both stores); the service worker verifies every cached file's SHA-256 (stale index.html fails the install); select focus, Safari opener, modal footer/scroll lock, 1100 px crossing, shortcut guard, Retro selected focus ring, no wrapped values or mid-word breaks, two-line titles, safe areas, Trusted Types (web builds). 209 tests, safety-eval 187, browser-boot 145. Open: desktop Trusted Types (needs a smoke check that watches violations), phone reach (owner) |
 
 ## Exact next permitted action
 
@@ -34,7 +35,9 @@
 2. Owner, when convenient: open the single file and the served site on an iPhone (Safari 16.4+) and in Firefox, the manual WebKit/Gecko half of the M1 CSP spike.
 3. Coordinator: push `dev` with the M2a commits and confirm CI (new check-i18n and check-web steps, safety-eval B/C/D, browser-boot with the upgrade test on windows-latest).
 4. Owner, when convenient: try the shell on a phone (drawer, bottom sheet, themes) through the single file, or on Pages once enabled; Pages enablement stays an owner decision.
-5. Without waiting: M2b (Date port into the shell, with Date safety-eval B/C under both adapters).
+5. Coordinator: push `dev` with the E-06 review-fix commits and confirm CI (browser-boot now has the stale-index upgrade case and the Trusted Types controls).
+6. Owner decision before M5b: phone one-handed reach. Today the ☰ drawer and the history pane toggles sit in the top corners at 390 px. Options: a bottom app bar below 760 px holding the pane toggle (and possibly the drawer), or an edge-swipe opener; the top bar keeps the title.
+7. Without waiting: M2b (Date port into the shell, with Date safety-eval B/C under both adapters). Optional hardening: Trusted Types in the desktop CSP once the smoke test reports CSP and Trusted Types violations from the WebView2 page.
 
 ## Do not repeat / known pitfalls
 
@@ -48,3 +51,5 @@
 - The mini-DOM (scripts/lib/mini-dom.mjs) deliberately ignores `inert` and models no layout; layout, tap targets and real focus belong to browser-boot.
 - Keep every new UI string in `web/i18n/en.json` and use it: check-i18n fails on unused keys and on calls to missing ones. A new theme token goes into all three theme blocks (check-web).
 - `date-core` and `percent-core` are copies: engine behaviour changes need regenerated goldens (date-core) or new hand-checked goldens (percent-core), never edits to make tests pass.
+- With Trusted Types on the web CSPs, a new script-URL or HTML sink fails at runtime: route any new service-worker or script URL through the one `pcalc` policy in boot.js (it allows only `sw.js`); the single file allows no policy at all.
+- sw.js caches only bytes whose SHA-256 matches the build (`BUILD.sha256`): any file added to the cached list must be in build-info with its hash.
