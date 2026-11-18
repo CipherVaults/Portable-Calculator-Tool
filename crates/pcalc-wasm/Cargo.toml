@@ -1,0 +1,15 @@
+[package]
+name = "pcalc-wasm"
+# The app version (locked by scripts/check-versions.mjs).
+version = "0.1.0"
+edition = "2021"
+description = "engine.wasm: the raw string-in/string-out WASM ABI over pcalc-api (no wasm-bindgen)."
+authors = ["Mohamed Sayed", "Ahmed Emara", "Claude"]
+license = "UNLICENSED"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pcalc-api = { path = "../pcalc-api" }

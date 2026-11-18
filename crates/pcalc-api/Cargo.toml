@@ -1,0 +1,26 @@
+[package]
+name = "pcalc-api"
+# The app version (locked by scripts/check-versions.mjs), not an engine version.
+version = "0.1.0"
+edition = "2021"
+description = "The one engine API of Portable Calculator Tool: op dispatch, the result envelope and per-op request caps."
+authors = ["Mohamed Sayed", "Ahmed Emara", "Claude"]
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+calc-core = { path = "../calc-core" }
+calc-num = { path = "../calc-num" }
+date-core = { path = "../date-core" }
+graph-core = { path = "../graph-core" }
+percent-core = { path = "../percent-core" }
+units-core = { path = "../units-core" }
+serde = { version = "1", features = ["derive"] }
+# Owner-approved (plan B1). float_roundtrip is declared HERE so that native
+# builds and `-p pcalc-wasm` builds parse percent f64 inputs identically,
+# whatever other crates enable.
+serde_json = { version = "1", features = ["float_roundtrip"] }
+
+[[example]]
+name = "api_bridge"
+test = true
