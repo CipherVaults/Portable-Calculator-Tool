@@ -17,14 +17,17 @@
 //! Read-only documents refuse [`DocStore::save`] with `read_only`. They
 //! leave read-only only through a successful reload ([`DocStore::load`],
 //! "Retry") or an explicit [`DocStore::clear`] ("Start fresh", confirmed by
-//! the UI), which backs the old file up before removing it. A save of a
+//! the UI), which backs the old file up (and reads the backup back) before
+//! removing it; a newer document is never cleared. A save of a
 //! document this process has not loaded yet loads it first, so a save can
 //! never overwrite a file nobody has looked at (corrupt, newer or
 //! unreadable).
 //!
 //! Backups are `<name>.<yyyymmdd-hhmmss>[-n].bak` (UTC), newest 3 kept per
-//! document; a backup identical to the newest one is not written again, so
-//! reloading the same corrupt file does not rotate good backups away.
+//! document; a backup identical to a kept one is not written again, so
+//! reloading the same corrupt file does not rotate good backups away, and the
+//! backup just written is never the one pruned (the clock may have been set
+//! back).
 //!
 //! [`DocStore::memory`] keeps everything in memory (the `--smoke-test` run
 //! never touches the real app data).
@@ -293,6 +296,14 @@ impl DocStore {
             .unwrap_or(false)
     }
 
+    /// The read-only status of `doc` as of its last load, if any.
+    fn status_of(&self, doc: Doc) -> Option<Status> {
+        self.read_only
+            .lock()
+            .ok()
+            .and_then(|m| m.get(doc.name()).copied())
+    }
+
     /// Whether `doc` is read-only right now (as of its last load; a
     /// document never loaded is loaded by its first save).
     pub fn is_read_only(&self, doc: Doc) -> bool {
@@ -368,13 +379,33 @@ impl DocStore {
 
     /// "Start fresh": backs the current file up (or moves an unreadable
     /// one aside whole), removes it, and makes `doc` writable and empty.
+    /// Refused with `read_only` for a document written by a newer app (B10:
+    /// never written, never backed up); a document not loaded yet is loaded
+    /// first to find that out.
     pub fn clear(&self, doc: Doc) -> Result<Option<String>, StoreError> {
+        if !self.was_loaded(doc) {
+            self.load(doc);
+        }
+        if self.status_of(doc) == Some(Status::Newer) {
+            return Err(StoreError::ReadOnly);
+        }
         let backup = match self.read_raw(doc) {
             Raw::Missing => None,
             Raw::Bytes(bytes) => {
+                if let Checked::Newer(_) = check(doc, &bytes) {
+                    // A newer app replaced it since the last load.
+                    self.set_read_only(doc, Some(Status::Newer));
+                    return Err(StoreError::ReadOnly);
+                }
                 let backup = self.backup(doc, &bytes);
-                if backup.is_none() && !self.newest_backup_equals(doc, &bytes) {
-                    // Never remove data that could not be backed up.
+                // Never remove data that is not safely in a backup: the file
+                // just written (read back and compared) or, when none was
+                // written, an existing backup with the same bytes.
+                let safe = match &backup {
+                    Some(file) => self.read_backup(file).is_some_and(|b| b == bytes),
+                    None => self.any_backup_equals(doc, &bytes),
+                };
+                if !safe {
                     return Err(StoreError::WriteFailed);
                 }
                 self.remove_file(&Self::file_name(doc))
@@ -423,18 +454,22 @@ impl DocStore {
         }
     }
 
-    fn newest_backup_equals(&self, doc: Doc, bytes: &[u8]) -> bool {
+    /// Whether one of the kept backups holds exactly `bytes` (all of them,
+    /// not only the newest by name: a clock set back makes a new backup
+    /// sort before older ones).
+    fn any_backup_equals(&self, doc: Doc, bytes: &[u8]) -> bool {
         self.backups(doc)
-            .first()
-            .and_then(|f| self.read_backup(f))
-            .is_some_and(|b| b == bytes)
+            .iter()
+            .any(|f| self.read_backup(f).is_some_and(|b| b == bytes))
     }
 
-    /// Writes a timestamped backup of `bytes` unless the newest backup has
-    /// the same bytes, then keeps the newest [`BACKUPS_KEPT`]. Returns the
-    /// new backup's file name.
+    /// Writes a timestamped backup of `bytes` unless a kept backup has the
+    /// same bytes, then keeps the new one plus the newest
+    /// [`BACKUPS_KEPT`]` - 1` others. The file just written is never pruned,
+    /// whatever its time stamp says (a clock set back, a date set ahead to
+    /// test countdowns). Returns the new backup's file name.
     fn backup(&self, doc: Doc, bytes: &[u8]) -> Option<String> {
-        if self.newest_backup_equals(doc, bytes) {
+        if self.any_backup_equals(doc, bytes) {
             return None;
         }
         let ts = stamp((self.clock)());
@@ -449,7 +484,12 @@ impl DocStore {
             })
             .find(|f| !existing.contains(f) && self.name_is_free(f))?;
         self.write_file(&file, bytes).ok()?;
-        for old in self.backups(doc).into_iter().skip(BACKUPS_KEPT) {
+        for old in self
+            .backups(doc)
+            .into_iter()
+            .filter(|f| *f != file)
+            .skip(BACKUPS_KEPT - 1)
+        {
             let _ = self.remove_file(&old);
         }
         Some(file)
@@ -852,6 +892,77 @@ mod tests {
                 .save(Doc::State, STATE)
                 .unwrap()
                 .contains("\"route\":\"date\""));
+        }
+    }
+
+    static FUTURE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1_900_000_000);
+    fn future() -> u64 {
+        FUTURE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// A clock set back below the stamps of the kept backups: the backup a
+    /// corrupt load writes must survive the pruning, and "Start fresh" must
+    /// only remove the document once a backup really holds its bytes.
+    #[test]
+    fn a_clock_set_back_never_prunes_the_new_backup() {
+        let temp = TestTempDir::new("pcalc-docs-rollback");
+        let dir = temp.path().join("app");
+        for store in [
+            DocStore::in_dir(&dir).with_clock(future),
+            DocStore::memory().with_clock(future),
+        ] {
+            for i in 0..3 {
+                store
+                    .put_raw(Doc::History, format!("old {i}").as_bytes())
+                    .unwrap();
+                assert!(store.load(Doc::History).backup.is_some());
+            }
+            let store = store.with_clock(frozen);
+            store.put_raw(Doc::History, b"the only copy").unwrap();
+            let out = store.load(Doc::History);
+            assert_eq!(out.status, Status::Corrupt);
+            let bak = out.backup.clone().expect("a backup was written");
+            assert_eq!(
+                store.read_backup(&bak).as_deref(),
+                Some(&b"the only copy"[..]),
+                "the reported backup exists and holds the document"
+            );
+            assert!(store.backups(Doc::History).contains(&bak));
+            assert_eq!(store.backups(Doc::History).len(), BACKUPS_KEPT);
+            // Reloading the same bytes still writes nothing new.
+            assert_eq!(store.load(Doc::History).backup, None);
+            // Start fresh: the bytes are in a backup, so the file may go.
+            assert_eq!(store.clear(Doc::History), Ok(None));
+            assert!(store
+                .backups(Doc::History)
+                .iter()
+                .any(|f| store.read_backup(f).as_deref() == Some(&b"the only copy"[..])));
+        }
+    }
+
+    #[test]
+    fn a_newer_document_is_never_cleared() {
+        let temp = TestTempDir::new("pcalc-docs-newer-clear");
+        for store in stores(&temp) {
+            let newer = br#"{"schemaVersion":9,"fromTheFuture":true}"#;
+            store.put_raw(Doc::Settings, newer).unwrap();
+            // Not loaded yet: clear loads first and refuses.
+            assert_eq!(store.clear(Doc::Settings), Err(StoreError::ReadOnly));
+            assert_eq!(store.read_raw_for_test(Doc::Settings), newer);
+            assert!(store.backups(Doc::Settings).is_empty());
+            assert_eq!(store.load(Doc::Settings).status, Status::Newer);
+            assert_eq!(store.clear(Doc::Settings), Err(StoreError::ReadOnly));
+            // A newer app wrote it after a corrupt load here: still refused.
+            store.put_raw(Doc::State, b"{bad").unwrap();
+            assert_eq!(store.load(Doc::State).status, Status::Corrupt);
+            store
+                .put_raw(Doc::State, br#"{"schemaVersion":5}"#)
+                .unwrap();
+            assert_eq!(store.clear(Doc::State), Err(StoreError::ReadOnly));
+            assert_eq!(
+                store.read_raw_for_test(Doc::State),
+                br#"{"schemaVersion":5}"#
+            );
         }
     }
 
