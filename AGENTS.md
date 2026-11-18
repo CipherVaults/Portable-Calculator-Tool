@@ -53,19 +53,22 @@ Commits follow the owner's *Git & GitHub Rhythm* (Claude skill `git-github-rhyth
 ## Verification workflow
 
 ```powershell
+node scripts/build-web.mjs --desktop-only   # src-tauri embeds dist/desktop at compile time
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo clippy -p pcalc-api -p pcalc-wasm -p date-core -p percent-core -p calc-num -p calc-core -p units-core -p graph-core --target wasm32-unknown-unknown --locked -- -D warnings
 cargo test --workspace --locked
 cargo run -p date-core --example gen_golden --locked -- --check
-cargo build -p pcalc-wasm --target wasm32-unknown-unknown --profile wasm --locked
+node scripts/build-wasm.mjs                 # cargo build -p pcalc-wasm --target wasm32-unknown-unknown --profile wasm --locked, with local paths remapped
 node scripts/build-web.mjs
+cargo build --release --locked -p pcalc-api -p date-core -p percent-core --examples
 node scripts/check-wasm.mjs
 node scripts/check-versions.mjs
+node scripts/check-unsafe.mjs
 cargo run -p portable-calculator-tool --locked -- --smoke-test
 ```
 
-The CI equivalent is `.github/workflows/ci.yml` (on `dev`). Every Action is SHA-pinned with `persist-credentials: false` and `permissions: contents: read`.
+Build `engine.wasm` through `scripts/build-wasm.mjs`: a bare `cargo build` embeds the local cargo-home path (with the user name) in panic-location strings. The CI equivalent is `.github/workflows/ci.yml` (on `dev` only; no release job before M10). Every Action is SHA-pinned with `persist-credentials: false` and `permissions: contents: read`.
 
 ## Reporting and stopping
 
