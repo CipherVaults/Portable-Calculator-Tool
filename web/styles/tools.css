@@ -1,4 +1,4 @@
-/* Tool cards (plan B5, B9): the Date tool now, Percentage in M2c. Phone
+/* Tool cards (plan B5, B9): the Date and Percentage tools. Phone
    first: one column of cards, each with its inputs, then its live-formula
    panel; a card wide enough (a container query, so the pinned drawer and
    docked pane count) puts the two side by side. Every control is at least
@@ -17,7 +17,8 @@
   border: 0;
 }
 
-.date-tool {
+.date-tool,
+.percent-tool {
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
@@ -172,7 +173,8 @@
 
 /* ---- fields ---- */
 
-.date-field {
+.date-field,
+.tool-field {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   gap: var(--space-1);
@@ -242,13 +244,15 @@
 }
 
 .mode-button.active,
-.mode-button[aria-pressed="true"] {
+.mode-button[aria-pressed="true"],
+.chip-button[aria-pressed="true"] {
   background: var(--selected-bg);
   color: var(--selected-text);
   border-color: var(--accent);
 }
 
-.mode-button[aria-pressed="true"]:focus-visible {
+.mode-button[aria-pressed="true"]:focus-visible,
+.chip-button[aria-pressed="true"]:focus-visible {
   outline-color: var(--focus-ring-selected);
 }
 
@@ -358,6 +362,12 @@
 
 .trace li {
   padding-block: 2px;
+}
+
+/* The Percentage tool's live formula: one equation per line, no bullets. */
+.formula-lines {
+  list-style: none;
+  padding-inline-start: 0;
 }
 
 .trace-hint {

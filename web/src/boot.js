@@ -356,6 +356,21 @@
     put("betweenStart", "");
     put("betweenEnd", "");
     put("infoDate", "");
+    // The Percentage tool through this adapter's engine: eight cards, and
+    // Discount's two result lines built from the engine's fields as text
+    // (its "<br>" label is never shown).
+    ctx.shell.navigate("percent");
+    await nextFrame();
+    put("discountPrice", "79.99");
+    put("discountPercent", "20");
+    const pctLive = () => (byId("discountLive") ? byId("discountLive").textContent : "");
+    for (let i = 0; i < 40 && !/63\.99/.test(pctLive()); i++) await nextFrame();
+    const pctCards = byId("percentCards") ? byId("percentCards").children.length : 0;
+    const pctLines = byId("discountResult") ? byId("discountResult").querySelectorAll(".result-main, .result-sub").length : 0;
+    const pctAngle = byId("percentTool") ? byId("percentTool").textContent.includes("<") : true;
+    if (!/63\.99/.test(pctLive()) || pctCards !== 8 || pctLines !== 2 || pctAngle) fails.push("percent tool live=" + pctLive() + " cards=" + pctCards + " lines=" + pctLines);
+    put("discountPrice", "");
+    put("discountPercent", "");
     for (const pref of ["daylight", "retro", "terminal"]) {
       await ctx.setTheme(pref);
       const bg = getComputedStyle(root).getPropertyValue("--bg").trim().toUpperCase();
@@ -386,7 +401,7 @@
     const saved = await ctx.store.save("countdowns", countdowns);
     const back = await ctx.store.load("countdowns");
     if (!saved.ok || back.status !== "ok" || JSON.parse(back.doc).items[0].label !== "Smoke") fails.push("round trip countdowns");
-    return { ok: fails.length === 0, text: "shell " + (fails.length === 0 ? "ok (" + ns.router.ROUTES.length + " routes, the Date tool live, 3 themes + System, 3 store round trips)" : "FAILED: " + fails.join(", ")) };
+    return { ok: fails.length === 0, text: "shell " + (fails.length === 0 ? "ok (" + ns.router.ROUTES.length + " routes, the Date and Percentage tools live, 3 themes + System, 3 store round trips)" : "FAILED: " + fails.join(", ")) };
   }
 
   async function measureIpc(platform) {

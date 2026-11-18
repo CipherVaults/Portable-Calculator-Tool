@@ -23,6 +23,7 @@
     "src/tools/date/countdowns.js",
     "src/tools/date/date-tool.js",
     "src/tools/date/date-settings.js",
+    "src/tools/percent/percent-tool.js",
     "src/shell/views.js",
     "src/shell/shell.js",
     "src/boot.js"
