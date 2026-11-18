@@ -1,0 +1,18 @@
+[package]
+name = "graph-core"
+version = "0.1.0"
+edition = "2021"
+description = "Function graphing (expression bytecode and f64 sampling) for Portable Calculator Tool."
+authors = ["Mohamed Sayed", "Ahmed Emara", "Claude"]
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+calc-core = { path = "../calc-core" }
+# Owner-approved exception to "serde only" (plan B7): the pinned pure-Rust
+# libm gives bit-identical transcendentals on native and wasm32.
+libm = "=0.2.11"
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

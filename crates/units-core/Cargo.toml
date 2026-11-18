@@ -1,0 +1,12 @@
+[package]
+name = "units-core"
+version = "0.1.0"
+edition = "2021"
+description = "Unit catalogue and exact unit conversion for Portable Calculator Tool."
+authors = ["Mohamed Sayed", "Ahmed Emara", "Claude"]
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+calc-num = { path = "../calc-num" }
+serde = { version = "1", features = ["derive"] }

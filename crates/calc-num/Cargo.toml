@@ -1,0 +1,14 @@
+[package]
+name = "calc-num"
+version = "0.1.0"
+edition = "2021"
+description = "34-digit decimal arithmetic on integer limbs for Portable Calculator Tool (no floats)."
+authors = ["Mohamed Sayed", "Ahmed Emara", "Claude"]
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"

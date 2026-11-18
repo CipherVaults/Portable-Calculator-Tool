@@ -1,0 +1,15 @@
+[package]
+name = "calc-core"
+version = "0.1.0"
+edition = "2021"
+description = "Standard/Scientific key machine, expression parser and Programmer engine for Portable Calculator Tool."
+authors = ["Mohamed Sayed", "Ahmed Emara", "Claude"]
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+calc-num = { path = "../calc-num" }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
