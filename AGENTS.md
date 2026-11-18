@@ -61,7 +61,8 @@ cargo test --workspace --locked
 cargo run -p date-core --example gen_golden --locked -- --check
 node scripts/build-wasm.mjs --check-twice   # the only writer of target/engine/engine.wasm (local paths remapped, leak-checked, reproducible)
 node scripts/build-web.mjs                  # run twice and compare dist/ for determinism
-node scripts/check-wasm.mjs                 # builds the release bridges itself (cargo), then native vs WASM in 3 time zones
+node scripts/check-wasm.mjs                 # builds the release bridges itself (cargo), then goldens + 200k seeded random requests, native vs WASM in 3 time zones
+node scripts/browser-boot.mjs               # headless Edge (CDP, throwaway profile): both web builds boot under their CSPs; tampered, blocked and no-WASM show the rescue view
 node scripts/check-versions.mjs
 node scripts/check-unsafe.mjs
 node scripts/safety-eval.mjs                # slice D: static hygiene with mutant proofs, and the built dist/

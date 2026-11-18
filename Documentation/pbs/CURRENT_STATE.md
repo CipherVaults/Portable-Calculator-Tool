@@ -27,6 +27,6 @@
 
 ## Operational orientation
 
-- Current phase: **M0 done (review fixes in E-03); M1 next** (WebKit/Gecko/WebView2 CSP spike, random native-vs-WASM diff, IPC timing). Live operational source: the working tree and `git log` on `dev`.
+- Current phase: **M0 done (E-01 to E-03); M1 done locally (E-04: random native-vs-WASM diff, per-op caps, Edge boot proof with the rescue view, sizes and IPC timing; WebKit/Gecko stay manual); M2a next**. Live operational source: the working tree and `git log` on `dev`.
 - Source/owner map: [SOURCE_OWNERSHIP_MAP.md](SOURCE_OWNERSHIP_MAP.md).
 - Unaccepted work pointer: [CONTINUATION_STATE.md](CONTINUATION_STATE.md).
