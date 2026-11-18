@@ -3,10 +3,10 @@
 ## Present-state identity
 
 - Record type: accepted present and active authority pointer (PBS v1.1).
-- Canonical project home: local repository `D:\Claude Projects\Portable Calculator Tool` (branches `main` and `dev`). **No GitHub repository and no remote yet**: creating `CipherVaults/Portable-Calculator-Tool` is an owner gate. Repository entry: [AGENTS.md](../../AGENTS.md).
+- Canonical project home: local repository `D:\Claude Projects\Portable Calculator Tool` (branches `main` and `dev`), remote `origin` = public GitHub repository [CipherVaults/Portable-Calculator-Tool](https://github.com/CipherVaults/Portable-Calculator-Tool), created by the coordinating session on the owner's yes on 2026-11-18 (recorded in the Date repo's CONTINUATION_STATE, commit `2b24700`). Observed 2026-11-18: `origin/main` = `659311e` (workflow-free), `origin/dev` = `482e52d`; later local `dev` commits are pushed by the coordinator. Repository entry: [AGENTS.md](../../AGENTS.md).
 - Chosen granularity: combined small-project checkpoint. [Continuation](CONTINUATION_STATE.md) owns unfinished milestone work; the [Execution & Coding Ledger](EXECUTION_AND_CODING_LEDGER.md) owns execution evidence.
 - State owner: coordinating maintainer (Claude Code, Opus 5.5); the project owner (Ahmed) decides acceptance.
-- As of: **2026-11-18**: M0 local work done, verified and committed on `dev` (Ledger E-01, E-02). App version `0.1.0` (development). Nothing published.
+- As of: **2026-11-18**: M0 done on `dev` (Ledger E-01, E-02; CI run 44254904073 green on `482e52d`), plus the M0 review fixes and the D-slice (E-03, verified locally, CI pending its push). App version `0.1.0` (development). No release and no Pages site.
 
 ## Accepted present
 
@@ -22,10 +22,11 @@
   - fixes, improvements and security hardening that matter are done without waiting;
   - the web app is phone-first.
 - Decisions approved with the plan: identifier `com.portablecalculator.tool`; `libm` for graphing; `serde_json` allowed in `pcalc-api`; desktop engine stays native; browser floor Safari/iOS 16.4+, Chrome/Edge 97+, Firefox 102+; IndexedDB for web history; the workflow-free first `main` commit.
-- **Still gated on an explicit owner yes:** creating the GitHub repository, adding a remote and pushing, enabling Pages, merging to `main`, tags and releases.
+- Repository creation, the `origin` remote and pushing `main` (workflow-free) and `dev`: done on the owner's yes, 2026-11-18.
+- **Still gated on an explicit owner yes:** enabling Pages, merging to `main`, tags and releases.
 
 ## Operational orientation
 
-- Current phase: **M0 done locally; M1 next** (WebKit/Gecko/WebView2 CSP spike, random native-vs-WASM diff, IPC timing). Live operational source: the working tree and `git log` on `dev`.
+- Current phase: **M0 done (review fixes in E-03); M1 next** (WebKit/Gecko/WebView2 CSP spike, random native-vs-WASM diff, IPC timing). Live operational source: the working tree and `git log` on `dev`.
 - Source/owner map: [SOURCE_OWNERSHIP_MAP.md](SOURCE_OWNERSHIP_MAP.md).
 - Unaccepted work pointer: [CONTINUATION_STATE.md](CONTINUATION_STATE.md).

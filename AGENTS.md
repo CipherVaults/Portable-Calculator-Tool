@@ -35,14 +35,14 @@ Commits follow the owner's *Git & GitHub Rhythm* (Claude skill `git-github-rhyth
 - **Branches:** work happens on `dev`. `main` is reached only by PR from `dev`. The first `main` commit has **no `.github/workflows`**, so `main` can exist as a PR base without triggering a release.
 - **Who does what:**
   - The coordinating maintainer integrates, commits and pushes `dev`. Parallel agents edit files but do not commit.
-  - Creating the GitHub repository, adding a remote, enabling Pages, merging to `main`, tags and releases need the owner's explicit yes.
+  - The public repository `CipherVaults/Portable-Calculator-Tool` and its `origin` remote were created on the owner's yes (2026-11-18). Enabling Pages, merging to `main`, tags and releases need the owner's explicit yes.
 - **One coherent step per commit.** Stage explicit paths, never a blanket `git add -A` while other agents are editing. Read the staged diff before committing.
 - **Message format:**
   - A plain-language subject.
   - A bullet body with `Why / Changed / Checks / Remaining`. `Checks` names the real commands and results, and says what was not run.
   - Unfinished work is preserved as `WIP:`.
   - Every commit ends with the required `Co-Authored-By:` trailer.
-- **Push and verify** (once a remote exists): push after each verified milestone; verify with `git ls-remote origin dev` against `git rev-parse HEAD`; never force-push.
+- **Push and verify:** push after each verified milestone; verify with `git ls-remote origin dev` against `git rev-parse HEAD`; never force-push.
 - **Receipts** (SHA, checks, not covered) go in the closing report and, for milestones, in the [Execution & Coding Ledger](Documentation/pbs/EXECUTION_AND_CODING_LEDGER.md).
 
 ## Permission checks
@@ -59,16 +59,16 @@ cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo clippy -p pcalc-api -p pcalc-wasm -p date-core -p percent-core -p calc-num -p calc-core -p units-core -p graph-core --target wasm32-unknown-unknown --locked -- -D warnings
 cargo test --workspace --locked
 cargo run -p date-core --example gen_golden --locked -- --check
-node scripts/build-wasm.mjs                 # cargo build -p pcalc-wasm --target wasm32-unknown-unknown --profile wasm --locked, with local paths remapped
-node scripts/build-web.mjs
-cargo build --release --locked -p pcalc-api -p date-core -p percent-core --examples
-node scripts/check-wasm.mjs
+node scripts/build-wasm.mjs --check-twice   # the only writer of target/engine/engine.wasm (local paths remapped, leak-checked, reproducible)
+node scripts/build-web.mjs                  # run twice and compare dist/ for determinism
+node scripts/check-wasm.mjs                 # builds the release bridges itself (cargo), then native vs WASM in 3 time zones
 node scripts/check-versions.mjs
 node scripts/check-unsafe.mjs
+node scripts/safety-eval.mjs                # slice D: static hygiene with mutant proofs, and the built dist/
 cargo run -p portable-calculator-tool --locked -- --smoke-test
 ```
 
-Build `engine.wasm` through `scripts/build-wasm.mjs`: a bare `cargo build` embeds the local cargo-home path (with the user name) in panic-location strings. The CI equivalent is `.github/workflows/ci.yml` (on `dev` only; no release job before M10). Every Action is SHA-pinned with `persist-credentials: false` and `permissions: contents: read`.
+Build `engine.wasm` through `scripts/build-wasm.mjs`, never a bare `cargo build`: that embeds the local cargo-home path (with the user name) in panic-location strings. `build-web.mjs` ships only `target/engine/engine.wasm`, which only `build-wasm.mjs` writes, and `build-web.mjs`, `check-wasm.mjs` and `safety-eval.mjs` all refuse an engine that contains a local path of the machine (`scripts/lib/local-paths.mjs`). The static rules (`scripts/lib/web-hygiene.mjs`, `scripts/lib/rust-hygiene.mjs`) scan raw text: a banned name (an HTML sink, an inline style write, the unsafe keyword before a brace, fn, impl, trait or extern) may not appear even in a comment. The CI equivalent is `.github/workflows/ci.yml` (on `dev` only; no release job before M10). Every Action is SHA-pinned with `persist-credentials: false` and `permissions: contents: read`.
 
 ## Reporting and stopping
 

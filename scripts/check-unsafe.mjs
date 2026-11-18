@@ -3,15 +3,32 @@
 // - every crate root except pcalc-wasm has #![forbid(unsafe_code)];
 // - pcalc-wasm has #![deny(unsafe_code)], and each #[allow(unsafe_code)] in
 //   it sits directly on an #[unsafe(no_mangle)] export attribute;
-// - no other Rust line anywhere uses an `unsafe` block, fn, impl or trait.
+// - no other Rust line anywhere uses an `unsafe` block, fn, impl, trait or
+//   extern block, and no other file allows unsafe_code.
+// The rules live in scripts/lib/rust-hygiene.mjs; scripts/safety-eval.mjs
+// (slice D) proves each one fires on a violating input.
 //
-//   node scripts/check-unsafe.mjs
+//   node scripts/check-unsafe.mjs [--root <dir inside target/>]
+//
+// --root checks another copy of the tree (safety-eval's mutants).
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { forbidRootProblems, rustSourceProblems, wasmRootProblems } from "./lib/rust-hygiene.mjs";
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const REPO = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const ROOT = rootArg(process.argv.slice(2));
 const problems = [];
+
+function rootArg(argv) {
+  if (argv.length === 0) return REPO;
+  const full = argv[0] === "--root" && argv[1] ? resolve(argv[1]) : null;
+  if (argv.length !== 2 || !full || !full.startsWith(join(REPO, "target") + sep)) {
+    console.error("check-unsafe: usage: check-unsafe.mjs [--root <dir inside target/>]");
+    process.exit(2);
+  }
+  return full;
+}
 
 const FORBID_ROOTS = [
   "crates/date-core/src/lib.rs",
@@ -25,25 +42,11 @@ const FORBID_ROOTS = [
   "src-tauri/src/main.rs"
 ];
 const WASM_ROOT = "crates/pcalc-wasm/src/lib.rs";
+const read = (rel) => readFileSync(join(ROOT, rel), "utf8");
 
-for (const rel of FORBID_ROOTS) {
-  if (!/^#!\[forbid\(unsafe_code\)\]$/m.test(readFileSync(join(ROOT, rel), "utf8"))) {
-    problems.push(`${rel}: missing #![forbid(unsafe_code)]`);
-  }
-}
-
-const wasm = readFileSync(join(ROOT, WASM_ROOT), "utf8").split("\n");
-if (!wasm.includes("#![deny(unsafe_code)]")) problems.push(`${WASM_ROOT}: missing #![deny(unsafe_code)]`);
-let allows = 0;
-wasm.forEach((line, i) => {
-  if (line.trim() === "#[allow(unsafe_code)]") {
-    allows++;
-    if ((wasm[i + 1] || "").trim() !== "#[unsafe(no_mangle)]") {
-      problems.push(`${WASM_ROOT}:${i + 1}: #[allow(unsafe_code)] not directly on #[unsafe(no_mangle)]`);
-    }
-  }
-});
-if (allows !== 4) problems.push(`${WASM_ROOT}: expected 4 allowed exports, found ${allows}`);
+for (const rel of FORBID_ROOTS) problems.push(...forbidRootProblems(rel, read(rel)));
+const wasm = wasmRootProblems(WASM_ROOT, read(WASM_ROOT));
+problems.push(...wasm.problems);
 
 function* rustFiles(dir) {
   for (const name of readdirSync(dir)) {
@@ -54,22 +57,19 @@ function* rustFiles(dir) {
   }
 }
 
-const UNSAFE_USE = /\bunsafe\s*(\{|fn\b|impl\b|trait\b|extern\b)/;
 let files = 0;
 for (const top of ["crates", "src-tauri"]) {
   for (const path of rustFiles(join(ROOT, top))) {
     files++;
-    readFileSync(path, "utf8").split("\n").forEach((line, i) => {
-      const code = line.replace(/\/\/.*$/, "");
-      if (UNSAFE_USE.test(code)) problems.push(`${relative(ROOT, path)}:${i + 1}: unsafe code`);
-    });
+    const rel = relative(ROOT, path).split("\\").join("/");
+    problems.push(...rustSourceProblems(rel, readFileSync(path, "utf8"), { allowUnsafeAttr: rel === WASM_ROOT }));
   }
 }
 
 for (const p of problems) console.log("FAIL " + p);
 console.log(
   problems.length === 0
-    ? `check-unsafe: OK (${files} Rust files; ${FORBID_ROOTS.length} forbid roots; pcalc-wasm has ${allows} allowed exports)`
+    ? `check-unsafe: OK (${files} Rust files; ${FORBID_ROOTS.length} forbid roots; pcalc-wasm has ${wasm.allows} allowed exports)`
     : "check-unsafe: FAILED"
 );
 process.exit(problems.length === 0 ? 0 : 1);

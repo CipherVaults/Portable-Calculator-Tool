@@ -17,28 +17,39 @@
 //                       number:x} (label == formatDecimal(x), since
 //                       (100/100)*x == x exactly) on api_bridge and WASM.
 //   extras              meta.versions, unknown ops, invalid JSON, the 64 KiB
-//                       cap at exactly cap and cap+1, and last-bit float
-//                       round trips (float_roundtrip in pcalc-api).
+//                       cap at exactly cap and cap+1, inputs over the WASM
+//                       input limit (an unknown op is still unknown_op, a
+//                       known one request_too_large, as on native), and
+//                       last-bit float round trips (float_roundtrip in
+//                       pcalc-api).
 // The parent then checks all three time zones produced the same digest.
 //
-//   node scripts/check-wasm.mjs [--wasm <path>] [--bridges <dir>]
+//   node scripts/check-wasm.mjs [--wasm <path>] [--bridges <dir>] [--no-build]
 //
-// Defaults: the engine named in dist/build-info.json (else the cargo output)
-// and the release example binaries in target/release/examples. Build them
-// first (PowerShell):
-//   node scripts/build-wasm.mjs
+// Defaults: the engine named in dist/build-info.json (else
+// target/engine/engine.wasm from build-wasm.mjs) and the release example
+// binaries in target/release/examples. The parent first runs
 //   cargo build --release --locked -p pcalc-api -p date-core -p percent-core --examples
+// so the native side is never stale (a no-op when it is current); --no-build
+// or --bridges <dir> skips that. Any engine that contains a local path of
+// this machine is refused. Build the engine first, and on Windows run this
+// from PowerShell (it runs Cargo):
+//   node scripts/build-wasm.mjs
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
+import { ENGINE_WASM, findLocalPath } from "./lib/local-paths.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const SCRIPT = fileURLToPath(import.meta.url);
 const TIME_ZONES = ["UTC", "America/New_York", "Africa/Cairo"];
 const CAP_ENGINE = 64 * 1024;
+// pcalc_wasm::MAX_INPUT_BYTES: MAX_OP_BYTES (64) + MAX_REQUEST_BYTES (8 MiB).
+const MAX_INPUT_BYTES = 64 + 8 * 1024 * 1024;
+const BRIDGE_BUILD = ["build", "--release", "--locked", "-p", "pcalc-api", "-p", "date-core", "-p", "percent-core", "--examples"];
 const EXE = process.platform === "win32" ? ".exe" : "";
 
 function fail(msg) {
@@ -47,11 +58,14 @@ function fail(msg) {
 }
 
 function parseArgs(argv) {
-  const opts = { wasm: null, bridges: join(ROOT, "target", "release", "examples"), child: false };
+  const opts = { wasm: null, bridges: join(ROOT, "target", "release", "examples"), child: false, build: true };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--wasm") opts.wasm = resolve(argv[++i] || fail("--wasm needs a path"));
-    else if (a === "--bridges") opts.bridges = resolve(argv[++i] || fail("--bridges needs a path"));
+    else if (a === "--bridges") {
+      opts.bridges = resolve(argv[++i] || fail("--bridges needs a path"));
+      opts.build = false;
+    } else if (a === "--no-build") opts.build = false;
     else if (a === "--child") opts.child = true;
     else fail(`unknown argument ${a}`);
   }
@@ -64,7 +78,7 @@ function defaultWasm() {
     const built = JSON.parse(readFileSync(info, "utf8"));
     if (built.web && built.web.wasm) return { path: join(ROOT, "dist", built.web.wasm.file), sha256: built.web.wasm.sha256 };
   }
-  return { path: join(ROOT, "target", "wasm32-unknown-unknown", "wasm", "pcalc_wasm.wasm"), sha256: null };
+  return { path: ENGINE_WASM, sha256: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +162,11 @@ function extraCases() {
     { op: "date.days_between", req: pad(CAP_ENGINE), expectCode: null },
     { op: "date.days_between", req: pad(CAP_ENGINE + 1), expectCode: "request_too_large" },
     { op: "percent.change", req: " ".repeat(CAP_ENGINE + 1), expectCode: "request_too_large" },
+    // Over the WASM input limit, where pc_in refuses before any op lookup:
+    // the loader must still answer unknown_op for an unknown op (B2 order).
+    { op: "nope", req: " ".repeat(MAX_INPUT_BYTES + 100), expectCode: "unknown_op" },
+    { op: "date.age", req: " ".repeat(MAX_INPUT_BYTES + 100), expectCode: "request_too_large" },
+    { op: "x".repeat(MAX_INPUT_BYTES + 1), req: "{}", expectCode: "unknown_op" },
     { op: "date.month_grid", req: '{"year":2026,"month":11,"firstDayOfWeek":"monday","today":"2026-11-18","calendar":{"preset":"eg"}}', expectCode: null },
     ...floats.map((text) => ({ op: "percent.what", req: `{"percent":100,"number":${text}}`, expectCode: null, floatText: text }))
   ];
@@ -173,8 +192,14 @@ function runBridge(exe, lines) {
   return out;
 }
 
+function refuseLocalPaths(wasmPath, bytes) {
+  const leak = findLocalPath(bytes);
+  if (leak) fail(`${wasmPath} contains the local path ${leak}; build it with node scripts/build-wasm.mjs`);
+}
+
 async function loadEngine(wasmPath, expectedSha) {
   const bytes = new Uint8Array(readFileSync(wasmPath));
+  refuseLocalPaths(wasmPath, bytes);
   const sha = createHash("sha256").update(bytes).digest("hex");
   if (expectedSha && sha !== expectedSha) fail(`${wasmPath} sha256 ${sha} != build-info ${expectedSha}`);
   // Run the real loader in a sandbox shaped like a browser window.
@@ -230,7 +255,7 @@ async function child(opts) {
   apiCases.forEach((c, i) => {
     if (wasmOut[i] !== apiNative[i]) {
       nativeMismatch++;
-      report(`native/wasm differ for ${c.op} ${c.req.slice(0, 120)}\n native ${apiNative[i].slice(0, 200)}\n wasm   ${wasmOut[i].slice(0, 200)}`);
+      report(`native/wasm differ for ${c.op.slice(0, 80)} ${c.req.slice(0, 120)}\n native ${apiNative[i].slice(0, 200)}\n wasm   ${wasmOut[i].slice(0, 200)}`);
     }
   });
 
@@ -275,7 +300,7 @@ async function child(opts) {
   extras.forEach((c, k) => {
     const out = JSON.parse(wasmOut[extraBase + k]);
     const code = out.ok === "true" ? null : out.error && out.error.code;
-    if (code !== c.expectCode) report(`extra ${c.op} ${c.req.slice(0, 80)}: code ${code}, want ${c.expectCode}`);
+    if (code !== c.expectCode) report(`extra ${c.op.slice(0, 80)} ${c.req.slice(0, 80)}: code ${code}, want ${c.expectCode}`);
     if (c.floatText !== undefined && !Object.is(out.result.value, Number(c.floatText))) {
       report(`float ${c.floatText}: got ${out.result.value}`);
     }
@@ -318,7 +343,14 @@ function singleFileEngineMatches(wasmSha) {
   return createHash("sha256").update(Buffer.from(m[1], "base64")).digest("hex") === wasmSha;
 }
 
+function buildBridges() {
+  const r = spawnSync("cargo", BRIDGE_BUILD, { cwd: ROOT, stdio: ["ignore", "inherit", "inherit"] });
+  if (r.error) fail(`cargo ${BRIDGE_BUILD.join(" ")}: ${r.error.message}`);
+  if (r.status !== 0) fail(`cargo ${BRIDGE_BUILD.join(" ")} exited ${r.status}`);
+}
+
 function parent(opts) {
+  if (opts.build) buildBridges();
   const results = [];
   for (const tz of TIME_ZONES) {
     const args = [SCRIPT, "--child", "--bridges", opts.bridges];

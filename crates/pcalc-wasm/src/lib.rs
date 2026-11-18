@@ -16,6 +16,13 @@
 //! calls `pc_call`, then reads `pc_out()` .. `+len` and decodes it. It
 //! re-reads `memory.buffer` after every call because the memory may grow.
 //!
+//! When `pc_in` refuses (the total is over [`MAX_INPUT_BYTES`]) no op has
+//! been looked up yet. To keep `pcalc_api`'s order of checks (`unknown_op`
+//! before `request_too_large`), the loader then calls `pc_call` with the op
+//! alone and a zero-length request: an unknown op answers `unknown_op`;
+//! any known op is `request_too_large`, because every known name is at most
+//! `MAX_OP_BYTES` and every cap at most `MAX_REQUEST_BYTES` (tested below).
+//!
 //! # Safety rules
 //!
 //! `#![deny(unsafe_code)]`; the only `#[allow(unsafe_code)]` items are the
@@ -159,6 +166,23 @@ mod tests {
             run(b"percent.change", b"\xFF"),
             pcalc_api::ApiError::INVALID_REQUEST.to_json()
         );
+    }
+
+    #[test]
+    fn the_loader_probe_after_a_refusal_keeps_the_order_of_checks() {
+        // A refused total is over every known op's cap.
+        for op in pcalc_api::Op::ALL {
+            assert!(op.name().len() <= pcalc_api::MAX_OP_BYTES);
+            assert!(op.request_cap() <= pcalc_api::MAX_REQUEST_BYTES);
+            assert!(MAX_INPUT_BYTES - op.name().len() >= op.request_cap());
+            // The probe (op alone) of a known op is never unknown_op.
+            assert_ne!(
+                run(op.name().as_bytes(), b""),
+                pcalc_api::ApiError::UNKNOWN_OP.to_json()
+            );
+        }
+        // ... and of an unknown op it is.
+        assert_eq!(run(b"nope", b""), pcalc_api::ApiError::UNKNOWN_OP.to_json());
     }
 
     #[test]

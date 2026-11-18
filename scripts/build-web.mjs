@@ -11,26 +11,38 @@
 //                   WASM as base64 in <script type="application/octet-stream">
 //   dist/build-info.json   versions, file names, sizes and SHA-256 of all of it
 //
-// Static checks run first and fail the build: LF-only sources, no DOM sinks
-// (innerHTML, outerHTML, insertAdjacentHTML, document.write, eval, new
-// Function), no .style writes, no raw colour literal outside tokens.css,
-// no "</script" inside inlined JS.
+// Static checks run first and fail the build (rules in
+// scripts/lib/web-hygiene.mjs, each proven to fire by scripts/safety-eval.mjs
+// slice D): LF-only sources; no HTML sinks, eval or Function constructor; no
+// inline style writes; no raw colour literal outside tokens.css; no closing
+// script/style tag inside inlined code; a template without inline styles,
+// handlers or scripts. Banned names may not appear even in comments.
 //
 //   node scripts/build-web.mjs                 # everything (needs engine.wasm)
 //   node scripts/build-web.mjs --desktop-only  # just dist/desktop (no WASM needed)
 //   node scripts/build-web.mjs --wasm <path>   # use another engine.wasm
+//   node scripts/build-web.mjs --web <dir> --out <dir>
+//                     # another source tree / output folder, both inside
+//                     # target/ (scripts/safety-eval.mjs builds mutants there)
 //
-// engine.wasm comes from (PowerShell):
-//   cargo build -p pcalc-wasm --target wasm32-unknown-unknown --profile wasm --locked
+// The default engine is target/engine/engine.wasm, which only (PowerShell)
+//   node scripts/build-wasm.mjs
+// writes, after its own leak check. Never cargo's output path: a bare
+// `cargo build` writes there with the local cargo-home path (and so the user
+// name) inside. Whatever the source, this build refuses an engine that
+// contains a local path of this machine.
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ENGINE_WASM, findLocalPath } from "./lib/local-paths.mjs";
+import { lineEndingProblems, scriptProblems, styleProblems, templateProblems } from "./lib/web-hygiene.mjs";
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const WEB = join(ROOT, "web");
-const DIST = join(ROOT, "dist");
-const DEFAULT_WASM = join(ROOT, "target", "wasm32-unknown-unknown", "wasm", "pcalc_wasm.wasm");
+const SCRATCH = join(ROOT, "target");
+let WEB = join(ROOT, "web");
+let DIST = join(ROOT, "dist");
+const DEFAULT_WASM = ENGINE_WASM;
 const SINGLE_NAME = "Portable-Calculator-Tool-Mobile.html";
 
 const WASM_BUDGET = 1_500_000; // plan B3: <= 1.5 MB
@@ -55,12 +67,21 @@ function fail(msg) {
   process.exit(1);
 }
 
+function insideScratch(path, flag) {
+  if (!path) fail(`${flag} needs a path`);
+  const full = resolve(path);
+  if (!full.startsWith(SCRATCH + sep)) fail(`${flag} must be inside ${SCRATCH}`);
+  return full;
+}
+
 function parseArgs(argv) {
   const opts = { desktopOnly: false, wasm: DEFAULT_WASM };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--desktop-only") opts.desktopOnly = true;
     else if (a === "--wasm") opts.wasm = resolve(argv[++i] || fail("--wasm needs a path"));
+    else if (a === "--web") WEB = insideScratch(argv[++i], "--web");
+    else if (a === "--out") DIST = insideScratch(argv[++i], "--out");
     else fail(`unknown argument ${a}`);
   }
   return opts;
@@ -74,42 +95,12 @@ const b64sha = (text) => "sha256-" + sha256(Buffer.from(text, "utf8")).toString(
 function readText(rel) {
   const path = join(WEB, rel);
   const text = readFileSync(path, "utf8");
-  if (text.includes("\r")) fail(`${rel} has CR characters; LF only (see .gitattributes)`);
+  failOn(lineEndingProblems(rel, text));
   return text;
 }
 
-// ---------------------------------------------------------------------------
-// Static checks
-// ---------------------------------------------------------------------------
-
-const JS_BANS = [
-  [/\binnerHTML\b/, "innerHTML"],
-  [/\bouterHTML\b/, "outerHTML"],
-  [/\binsertAdjacentHTML\b/, "insertAdjacentHTML"],
-  [/\bdocument\.write(ln)?\b/, "document.write"],
-  [/(^|[^.\w])eval\s*\(/, "eval("],
-  [/\bnew\s+Function\b/, "new Function"],
-  [/\.style\b/, ".style (toggle classes instead)"],
-  [/setAttribute\(\s*["']style["']/, "setAttribute(\"style\")"],
-  [/\.cssText\b/, "cssText"]
-];
-
-// Hex colours, rgb()/hsl() and friends.
-const COLOUR_LITERAL = /#[0-9a-fA-F]{3,8}\b|\b(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch)\(/;
-
-function checkScript(rel, text) {
-  // Comments may mention the banned names; strip them before scanning.
-  const code = text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'])\/\/.*$/gm, "$1");
-  for (const [re, name] of JS_BANS) {
-    if (re.test(code)) fail(`${rel}: forbidden ${name}`);
-  }
-}
-
-function checkStyle(rel, text) {
-  if (rel === "styles/tokens.css") return;
-  const code = text.replace(/\/\*[\s\S]*?\*\//g, "");
-  const m = code.match(COLOUR_LITERAL);
-  if (m) fail(`${rel}: raw colour literal ${m[0]} (use a token from styles/tokens.css)`);
+function failOn(problems) {
+  if (problems.length > 0) fail(problems.join("\nbuild-web: "));
 }
 
 // ---------------------------------------------------------------------------
@@ -197,7 +188,7 @@ function writeOut(dir, name, data) {
 function cleanDist(names) {
   for (const name of names) {
     const target = join(DIST, name);
-    if (!target.startsWith(DIST)) fail("refusing to clean outside dist/");
+    if (!target.startsWith(DIST + sep)) fail("refusing to clean outside the output folder");
     rmSync(target, { recursive: true, force: true });
   }
 }
@@ -211,18 +202,19 @@ function main() {
   const manifest = loadManifest();
   const catalogs = loadCatalogs(manifest);
   const template = readText("index.template.html");
+  failOn(templateProblems("index.template.html", template));
 
   const sources = new Map();
   for (const rel of manifest.scripts) {
     if (rel === "@build") continue;
     const text = readText(rel);
-    checkScript(rel, text);
+    failOn(scriptProblems(rel, text));
     sources.set(rel, text);
   }
   const css = manifest.styles
     .map((rel) => {
       const text = readText(rel);
-      checkStyle(rel, text);
+      failOn(styleProblems(rel, text));
       return `/* ---- web/${rel} */\n${text.endsWith("\n") ? text : text + "\n"}`;
     })
     .join("");
@@ -254,11 +246,19 @@ function main() {
     if (!existsSync(opts.wasm)) {
       fail(
         `engine.wasm not found at ${opts.wasm}\n` +
-          "Build it first (PowerShell): cargo build -p pcalc-wasm --target wasm32-unknown-unknown --profile wasm --locked\n" +
+          "Build it first (PowerShell): node scripts/build-wasm.mjs\n" +
           "or run with --desktop-only."
       );
     }
     const wasm = readFileSync(opts.wasm);
+    if (wasm.length < 8 || wasm.readUInt32BE(0) !== 0x0061736d) fail(`${opts.wasm} is not a WebAssembly module`);
+    const leak = findLocalPath(wasm);
+    if (leak) {
+      fail(
+        `${opts.wasm} contains the local path ${leak}; refusing to ship it.\n` +
+          "Build the engine with node scripts/build-wasm.mjs (it remaps local paths), not a bare cargo build."
+      );
+    }
     if (wasm.length > WASM_BUDGET) fail(`engine.wasm is ${wasm.length} bytes, over the ${WASM_BUDGET} budget`);
     const engineName = `engine.${short(wasm)}.wasm`;
     const engine = { file: engineName, sha256: hex(wasm) };

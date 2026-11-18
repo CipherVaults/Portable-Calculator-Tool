@@ -26,7 +26,7 @@ Find the authoritative answer to each project question without confusing permiss
 | Native storage and update check | `crates/pcalc-store` (`fs`, `update`) | Storage or update-check change |
 | Desktop app | `src-tauri/**` (`engine_call`, smoke test, `tauri.conf.json` CSP and identity, `capabilities/default.json`) | Authorized native change |
 | Web front end | `web/**` (`build-manifest.json` order, `src/core`, `src/platform`, `styles/tokens.css`, `i18n/*.json`) | Authorized UI change |
-| Build and checks | `scripts/build-wasm.mjs`, `build-web.mjs`, `check-wasm.mjs`, `check-versions.mjs`, `check-unsafe.mjs`, `serve-web.mjs`; CI `.github/workflows/ci.yml` (on `dev` only) | Toolchain, check or CI change |
+| Build and checks | `scripts/build-wasm.mjs` (sole writer of `target/engine/engine.wasm`), `build-web.mjs`, `check-wasm.mjs`, `check-versions.mjs`, `check-unsafe.mjs`, `safety-eval.mjs` (slice D), `serve-web.mjs`; shared rules `scripts/lib/{local-paths,web-hygiene,rust-hygiene}.mjs`; CI `.github/workflows/ci.yml` (on `dev` only) | Toolchain, check or CI change |
 | App version locations | `node scripts/check-versions.mjs` lists them all | Version bump |
 
 ## Conflict rules

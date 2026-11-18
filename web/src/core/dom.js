@@ -1,6 +1,6 @@
 // DOM helpers. The only ways UI code changes the page: textContent,
 // createElement, setAttribute (allowlisted), classList and replaceChildren.
-// Never innerHTML/outerHTML/insertAdjacentHTML/document.write, never .style.
+// Never an HTML sink or an inline style write (scripts/lib/web-hygiene.mjs).
 (function () {
   "use strict";
   const ALLOWED_ATTRS = new Set([

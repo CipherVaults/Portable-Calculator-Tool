@@ -88,6 +88,8 @@ jobs:
         run: node scripts/check-wasm.mjs
       - name: App version is the same everywhere (including the built pages)
         run: node scripts/check-versions.mjs
+      - name: safety-eval slice D (static hygiene with mutant proofs, built output)
+        run: node scripts/safety-eval.mjs --json "$RUNNER_TEMP/safety-eval.json"
       - name: Upload the web build
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

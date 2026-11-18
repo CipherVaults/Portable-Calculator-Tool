@@ -11,6 +11,12 @@
 // CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS (host build scripts are not
 // affected).
 //
+// The verified module is copied to target/engine/engine.wasm, the only file
+// build-web.mjs and check-wasm.mjs use by default. Cargo's own output path is
+// never shipped: a bare `cargo build` writes there too, unremapped. The copy
+// is removed first and written only after the leak scan (and, with
+// --check-twice, the reproducibility check) passed.
+//
 //   node scripts/build-wasm.mjs [--check-twice]
 //
 // --check-twice builds, records the SHA-256, then builds again from scratch
@@ -22,17 +28,14 @@
 // linker that the host build scripts need).
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, rmSync, statSync } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { copyFileSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { CARGO_HOME, ENGINE_WASM, ROOT, findLocalPath } from "./lib/local-paths.mjs";
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const TARGET = join(ROOT, "target");
 const REPRO_TARGET = join(TARGET, "wasm-repro");
 const wasmIn = (targetDir) => join(targetDir, "wasm32-unknown-unknown", "wasm", "pcalc_wasm.wasm");
 const WASM = wasmIn(TARGET);
-const CARGO_HOME = resolve(process.env.CARGO_HOME || join(homedir(), ".cargo"));
 
 function cargo(args, env) {
   const r = spawnSync("cargo", args, { cwd: ROOT, env, stdio: "inherit" });
@@ -53,28 +56,33 @@ function buildOnce(targetDir) {
   cargo(["build", "-p", "pcalc-wasm", "--target", "wasm32-unknown-unknown", "--profile", "wasm", "--locked"], env);
   const wasmPath = wasmIn(targetDir);
   const bytes = readFileSync(wasmPath);
-  const text = bytes.toString("latin1");
-  for (const leak of [CARGO_HOME, ROOT, homedir()]) {
-    for (const form of [leak, leak.split("\\").join("/")]) {
-      if (form.length > 3 && text.includes(form)) {
-        console.error(`build-wasm: ${wasmPath} still contains the local path ${form}`);
-        process.exit(1);
-      }
-    }
+  const leak = findLocalPath(bytes);
+  if (leak) {
+    console.error(`build-wasm: ${wasmPath} still contains the local path ${leak}`);
+    process.exit(1);
   }
-  return createHash("sha256").update(bytes).digest("hex");
+  return { sha: createHash("sha256").update(bytes).digest("hex"), size: bytes.length };
 }
 
 const twice = process.argv.includes("--check-twice");
+rmSync(ENGINE_WASM, { force: true });
 const first = buildOnce(TARGET);
-console.log(`build-wasm: ${WASM} ${statSync(WASM).size} bytes sha256 ${first}`);
+console.log(`build-wasm: ${WASM} ${first.size} bytes sha256 ${first.sha}`);
 if (twice) {
   if (!REPRO_TARGET.startsWith(TARGET)) throw new Error("repro target outside target/");
   rmSync(REPRO_TARGET, { recursive: true, force: true });
   const second = buildOnce(REPRO_TARGET);
-  if (second !== first) {
-    console.error(`build-wasm: builds differ: ${first} vs ${second}`);
+  if (second.sha !== first.sha) {
+    console.error(`build-wasm: builds differ: ${first.sha} vs ${second.sha}`);
     process.exit(1);
   }
   console.log(`build-wasm: an independent from-scratch build in ${REPRO_TARGET} is byte-identical`);
 }
+mkdirSync(dirname(ENGINE_WASM), { recursive: true });
+copyFileSync(WASM, ENGINE_WASM);
+const copied = createHash("sha256").update(readFileSync(ENGINE_WASM)).digest("hex");
+if (copied !== first.sha) {
+  console.error(`build-wasm: ${ENGINE_WASM} does not match the verified build`);
+  process.exit(1);
+}
+console.log(`build-wasm: wrote ${ENGINE_WASM} (the engine build-web.mjs ships)`);
