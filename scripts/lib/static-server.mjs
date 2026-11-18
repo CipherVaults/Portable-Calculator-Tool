@@ -62,9 +62,12 @@ function resolveFile(root, base, pathname) {
   }
 }
 
-// Starts the server; resolves to {server, url, port, hits, close()}.
+// Starts the server; resolves to {server, url, port, hits, setDir(dir),
+// close()}. setDir switches the served folder on the same origin (the
+// browser-boot upgrade test serves build N, then build N+1); close() stops
+// listening (the same test's "offline").
 export function startStaticServer({ dir, base = BASE, port = 0, transform = null }) {
-  const root = realpathSync(dir);
+  let root = realpathSync(dir);
   const hits = new Map();
   const server = createServer((req, res) => {
     if (req.method !== "GET" && req.method !== "HEAD") {
@@ -116,7 +119,14 @@ export function startStaticServer({ dir, base = BASE, port = 0, transform = null
         port: actual,
         url: `http://${HOST}:${actual}${base}`,
         hits,
-        close: () => new Promise((done) => server.close(() => done()))
+        setDir: (next) => {
+          root = realpathSync(next);
+        },
+        close: () =>
+          new Promise((done) => {
+            server.close(() => done());
+            server.closeAllConnections();
+          })
       });
     });
   });

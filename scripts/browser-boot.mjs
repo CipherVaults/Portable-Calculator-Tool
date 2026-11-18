@@ -33,18 +33,49 @@
 //              raw value seeded in localStorage the rescue view lists it
 //              byte for byte and leaves storage unchanged
 //
+// The shell (M2a), on the served build in its own throwaway profile:
+//   shell      at a 390 px phone: a real tap opens the ☰ drawer as a modal
+//              inside the viewport, Tab stays in it, Esc closes it and
+//              gives focus back; a drawer link navigates; Alt+5 and Ctrl+H
+//              work; the pane is a bottom sheet (full width, at the bottom,
+//              within 75% of the height, 44 px close button)
+//   theme      Settings > Appearance switches data-theme and the --bg
+//              colour at once; after a reload the pre-paint script has set
+//              the theme before <body> exists and the first frame already
+//              has the theme's background (no flash); the last route
+//              (Settings) reopens; settings and state are in IndexedDB
+//   sync       a second tab follows a theme change through
+//              BroadcastChannel("pcalc")
+//   layout     at 360, 390 and 440 px (phone emulation): every route
+//              family, the open drawer and the open pane, the Daylight and
+//              Retro themes, and the en-XA (+35%) and ar-XB (RTL)
+//              pseudo-locales: no horizontal scroll, nothing outside the
+//              viewport, every visible control at least 44 px tall; in
+//              ar-XB the drawer opens from the right. At 900 px the pane is
+//              an overlay from the inline end; at 1280 px the drawer is
+//              pinned and the pane docked. With --shots <dir> each case is
+//              saved as a PNG screenshot there
+//   upgrade    build N+1 (a copy of web/ with one changed byte, built into
+//              target/browser-boot/) on the same origin as build N: boot N
+//              and let its service worker take over, switch the server to
+//              N+1 and reload online (boots N+1 with only N+1 assets, the
+//              worker updates and deletes N's cache), then stop the server
+//              and reload offline (boots N+1 from the cache, the same
+//              assets): no mixed assets at any step
+//
 // Timing: each good build is booted --runs times (default 5) in fresh tabs;
 // data-boot-ms (navigation start to verdict, measured in the page) is
 // reported as first / median / max.
 //
-//   node scripts/browser-boot.mjs [--dist <dir>] [--edge <path>] [--runs N] [--json <path>]
+//   node scripts/browser-boot.mjs [--dist <dir>] [--edge <path>] [--runs N]
+//                                 [--json <path>] [--shots <dir>] [--skip-upgrade]
 //
 // Edge: --edge, else $PCALC_EDGE, else the usual install paths. WebKit
 // (Safari/iOS) and Gecko (Firefox) are not driven here; they stay manual
 // checks on real devices (plan B15 "Manual"). WebView2 is the desktop smoke
 // test (cargo run -p portable-calculator-tool -- --smoke-test).
-import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -62,10 +93,12 @@ function fail(msg) {
 }
 
 function parseArgs(argv) {
-  const opts = { dist: join(ROOT, "dist"), edge: process.env.PCALC_EDGE || null, runs: 5, json: null };
+  const opts = { dist: join(ROOT, "dist"), edge: process.env.PCALC_EDGE || null, runs: 5, json: null, shots: null, upgrade: true };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--dist") opts.dist = resolve(argv[++i] || fail("--dist needs a path"));
+    else if (a === "--shots") opts.shots = resolve(argv[++i] || fail("--shots needs a path"));
+    else if (a === "--skip-upgrade") opts.upgrade = false;
     else if (a === "--edge") opts.edge = resolve(argv[++i] || fail("--edge needs a path"));
     else if (a === "--json") opts.json = resolve(argv[++i] || fail("--json needs a path"));
     else if (a === "--runs") {
@@ -227,8 +260,10 @@ const STATE = `JSON.stringify((() => {
     engine: root.dataset.engine || null,
     engineSha256: root.dataset.engineSha256 || null,
     bootMs: Number(root.dataset.bootMs),
-    checksPassed: document.querySelectorAll(".check.pass").length,
-    checksFailed: document.querySelectorAll(".check.fail").length,
+    bootChecks: root.dataset.bootChecks || null,
+    store: root.dataset.store || null,
+    assets: root.dataset.assets || null,
+    route: root.dataset.route || null,
     rescue: rescue ? { state: rescue.dataset.state, keys: [...rescue.querySelectorAll(".rescue-key")].map((n) => n.textContent),
       values: [...rescue.querySelectorAll(".rescue-value")].map((n) => n.textContent), buttons: rescue.querySelectorAll("button").length } : null,
     title: (document.querySelector("h1") || {}).textContent || "",
@@ -248,7 +283,7 @@ async function evaluate(cdp, sessionId, expression) {
 }
 
 // Opens a tab, navigates, waits for data-boot, returns {state, logs, tab}.
-async function openPage(edge, url, { keepOpen = false } = {}) {
+async function openPage(edge, url, { keepOpen = false, preScripts = [] } = {}) {
   const noWasm = edge.noWasm === true;
   const { cdp } = edge;
   const { targetId } = await cdp.send("Target.createTarget", { url: "about:blank" });
@@ -271,9 +306,39 @@ async function openPage(edge, url, { keepOpen = false } = {}) {
   await cdp.send("Emulation.setDeviceMetricsOverride", PHONE, sessionId);
   if (noWasm) await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: NO_WASM }, sessionId);
   await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: PROBE }, sessionId);
+  for (const source of preScripts) await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source }, sessionId);
+  await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true }, sessionId);
   const tab = {
     sessionId,
     logs,
+    async viewport(width, height = 800, mobile = width < 760) {
+      await cdp.send("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 2, mobile }, sessionId);
+      await new Promise((r) => setTimeout(r, 120));
+    },
+    // A key press as the browser delivers it (keydown + keyup).
+    async key(key, { alt = false, ctrl = false, shift = false } = {}) {
+      const KEYS = { Tab: [9, "Tab"], Escape: [27, "Escape"], ArrowRight: [39, "ArrowRight"], ArrowLeft: [37, "ArrowLeft"] };
+      const [vk, code] = KEYS[key] || (/^\d$/.test(key) ? [48 + Number(key), "Digit" + key] : [key.toUpperCase().charCodeAt(0), "Key" + key.toUpperCase()]);
+      const modifiers = (alt ? 1 : 0) | (ctrl ? 2 : 0) | (shift ? 8 : 0);
+      const base = { key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers };
+      await cdp.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...base }, sessionId);
+      await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...base }, sessionId);
+      await new Promise((r) => setTimeout(r, 30));
+    },
+    // A real tap (mouse press and release) at the centre of `selector`.
+    async tap(selector) {
+      const box = await evaluate(cdp, sessionId, `(() => { const n = document.querySelector(${JSON.stringify(selector)}); if (!n) return null; const r = n.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+      if (!box) throw new Error(`tap: no element ${selector}`);
+      for (const type of ["mousePressed", "mouseReleased"]) {
+        await cdp.send("Input.dispatchMouseEvent", { type, x: box.x, y: box.y, button: "left", clickCount: 1 }, sessionId);
+      }
+      await new Promise((r) => setTimeout(r, 60));
+    },
+    async screenshot(path) {
+      const { data } = await cdp.send("Page.captureScreenshot", { format: "png" }, sessionId);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, Buffer.from(data, "base64"));
+    },
     async navigate(target) {
       const started = performance.now();
       await cdp.send("Page.navigate", { url: target }, sessionId);
@@ -321,7 +386,9 @@ const describeLogs = (logs) =>
 
 function expectGoodBoot(name, state, logs, engineSha) {
   expect(`${name}.boot-ok`, state.boot === "ok", `data-boot=${state.boot} error=${state.bootError}`);
-  expect(`${name}.checks`, state.checksPassed === 5 && state.checksFailed === 0, `${state.checksPassed} passed, ${state.checksFailed} failed`);
+  expect(`${name}.checks`, state.bootChecks === "5/5", `data-boot-checks=${state.bootChecks}`);
+  expect(`${name}.store-and-assets`, (state.store === "indexeddb" || (name === "single" && state.store === "memory")) && state.assets === "consistent", `data-store=${state.store} data-assets=${state.assets}`);
+  expect(`${name}.shell-on-default-route`, state.route === "standard" && state.title === "Standard", `route=${state.route} h1=${state.title}`);
   expect(`${name}.no-csp-violations`, Array.isArray(state.violations) && state.violations.length === 0, JSON.stringify(state.violations));
   expect(`${name}.no-console-errors`, errorCount(logs) === 0, describeLogs(logs));
   expect(`${name}.engine-sha256-verified`, state.engine === "wasm" && state.engineSha256 === engineSha, `engine=${state.engine} sha256=${state.engineSha256}`);
@@ -342,10 +409,355 @@ async function expectControl(name, edge, url) {
 
 function expectRescue(name, state, logs, wantBoot, wantError, allow) {
   expect(`${name}.boot-${wantBoot}`, state.boot === wantBoot && state.bootError === wantError, `data-boot=${state.boot} error=${state.bootError}`);
-  expect(`${name}.rescue-shown`, state.rescue !== null && state.checksPassed === 0, `rescue=${JSON.stringify(state.rescue)} title=${state.title}`);
+  expect(`${name}.rescue-shown`, state.rescue !== null && state.bootChecks === null, `rescue=${JSON.stringify(state.rescue)} title=${state.title}`);
   expect(`${name}.no-csp-violations`, Array.isArray(state.violations) && state.violations.length === 0, JSON.stringify(state.violations));
   expect(`${name}.no-console-errors`, errorCount(logs, allow) === 0, describeLogs(logs));
   expect(`${name}.phone-no-horizontal-scroll`, state.scrollWidth <= state.innerWidth, `scrollWidth ${state.scrollWidth}, viewport ${state.innerWidth}`);
+}
+
+// ---------------------------------------------------------------------------
+// The shell (M2a): interaction, theme and pre-paint, sync, layout, upgrade
+// ---------------------------------------------------------------------------
+
+// Records the theme when <body> is created (the pre-paint script in <head>
+// has run by then) and the page background of the first rendered frame.
+const FIRST_PAINT = `(() => {
+  const rec = { themeAtBody: null, themeAtFirstFrame: null, bgAtFirstFrame: null };
+  Object.defineProperty(window, "__pcalcFirstPaint", { value: rec });
+  const obs = new MutationObserver(() => {
+    if (document.body && rec.themeAtBody === null) {
+      rec.themeAtBody = document.documentElement.getAttribute("data-theme") || "";
+      obs.disconnect();
+    }
+  });
+  obs.observe(document, { childList: true, subtree: true });
+  requestAnimationFrame(() => {
+    rec.themeAtFirstFrame = document.documentElement.getAttribute("data-theme");
+    rec.bgAtFirstFrame = getComputedStyle(document.documentElement).backgroundColor;
+  });
+})();`;
+
+const json = async (tab, expression) => JSON.parse(await tab.evaluate(`(async () => JSON.stringify(await (${expression})))()`));
+
+// Box and modal state of the drawer or the pane.
+const BOX = (id) => `(() => {
+  const n = document.getElementById(${JSON.stringify(id)});
+  const r = n.getBoundingClientRect();
+  const a = document.activeElement;
+  return { hidden: n.hidden, role: n.getAttribute("role"), left: r.left, right: r.right, top: r.top, bottom: r.bottom,
+    width: r.width, height: r.height, vw: document.documentElement.clientWidth, vh: innerHeight, focusInside: n.contains(a), active: a ? a.id || a.getAttribute("data-route") || a.tagName : null,
+    viewInert: document.getElementById("view").inert, route: document.documentElement.dataset.route };
+})()`;
+
+// What a layout check needs: overflow, boxes outside the viewport, small
+// targets and clipped text.
+const LAYOUT = `(() => {
+  const vw = document.documentElement.clientWidth;
+  const name = (n) => n.tagName.toLowerCase() + (n.id ? "#" + n.id : "") + (n.className && typeof n.className === "string" ? "." + n.className.trim().split(/\\s+/).join(".") : "");
+  const shown = (n) => { const r = n.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(n).visibility !== "hidden"; };
+  const out = { vw, vh: innerHeight, scrollWidth: document.documentElement.scrollWidth, outside: [], small: [], clipped: [], dir: document.documentElement.dir, theme: document.documentElement.dataset.theme };
+  for (const n of document.querySelectorAll("body *")) {
+    if (!shown(n)) continue;
+    const r = n.getBoundingClientRect();
+    if (r.left < -0.5 || r.right > vw + 0.5) out.outside.push(name(n) + " " + Math.round(r.left) + ".." + Math.round(r.right));
+    const cs = getComputedStyle(n);
+    if ((cs.overflowX === "hidden" || cs.overflowX === "clip") && n.scrollWidth > n.clientWidth + 1 && !n.classList.contains("topbar-title")) out.clipped.push(name(n));
+  }
+  for (const n of document.querySelectorAll("#app button, #app a[href], #app select, #app .choice")) {
+    if (!shown(n)) continue;
+    const r = n.getBoundingClientRect();
+    if (r.height < 43.5) out.small.push(name(n) + " " + r.height.toFixed(1) + "px");
+  }
+  return out;
+})()`;
+
+// One IndexedDB document's raw stored value (read-only; null when absent).
+const IDB_GET = (key) => `new Promise((done) => {
+  const r = indexedDB.open("pcalc");
+  r.onerror = () => done(null);
+  r.onsuccess = () => {
+    const db = r.result;
+    if (!db.objectStoreNames.contains("docs")) { db.close(); return done(null); }
+    const g = db.transaction("docs").objectStore("docs").get(${JSON.stringify(key)});
+    g.onsuccess = () => { db.close(); done(g.result === undefined ? null : g.result); };
+    g.onerror = () => { db.close(); done(null); };
+  };
+})`;
+
+async function waitFor(tab, expression, timeoutMs = 3000) {
+  const end = Date.now() + timeoutMs;
+  for (;;) {
+    let v = null;
+    try {
+      v = await tab.evaluate(expression);
+    } catch (_) {
+      v = null;
+    }
+    if (v) return v;
+    if (Date.now() > end) return v;
+    await new Promise((r) => setTimeout(r, 40));
+  }
+}
+
+async function goRoute(tab, route) {
+  await tab.evaluate(`location.hash = "#/${route}"; true`);
+  await waitFor(tab, `document.documentElement.dataset.route === ${JSON.stringify(route)}`);
+  await new Promise((r) => setTimeout(r, 60));
+}
+
+async function pickTheme(tab, pref) {
+  await goRoute(tab, "settings");
+  await tab.tap(`#theme-${pref}`);
+  await waitFor(tab, `document.documentElement.dataset.themePref === ${JSON.stringify(pref)}`);
+}
+
+async function pickPseudo(tab, value) {
+  await goRoute(tab, "settings");
+  await tab.evaluate(`(() => { const s = document.getElementById("pseudoSelect"); s.value = ${JSON.stringify(value)}; s.dispatchEvent(new Event("change")); return true; })()`);
+  await new Promise((r) => setTimeout(r, 120));
+}
+
+async function shellChecks(edgePath, url) {
+  const edge = await launchEdge(edgePath, []);
+  try {
+    const { tab, state } = await openPage(edge, url, { keepOpen: true, preScripts: [FIRST_PAINT] });
+    await tab.viewport(390, 844);
+    expect("shell.boot", state.boot === "ok" && state.route === "standard", `data-boot=${state.boot} route=${state.route}`);
+
+    // Drawer: a real tap, a modal inside the viewport, Tab trapped, Esc.
+    await tab.evaluate(`document.getElementById("drawerToggle").focus(); true`);
+    await tab.tap("#drawerToggle");
+    const open = await json(tab, BOX("drawer"));
+    expect("shell.drawer-opens-as-modal", !open.hidden && open.role === "dialog" && open.focusInside && open.viewInert && open.left >= 0 && open.right <= open.vw && open.width <= open.vw * 0.86 + 1, JSON.stringify(open));
+    let escaped = 0;
+    for (let i = 0; i < 25; i++) {
+      await tab.key("Tab", { shift: i >= 12 });
+      if (!(await json(tab, BOX("drawer"))).focusInside) escaped++;
+    }
+    expect("shell.drawer-traps-tab", escaped === 0, `focus left the drawer ${escaped} times in 25 presses`);
+    await tab.key("Escape");
+    const closed = await json(tab, BOX("drawer"));
+    expect("shell.drawer-escape-returns-focus", closed.hidden && closed.active === "drawerToggle" && !closed.viewInert, JSON.stringify(closed));
+    await tab.tap("#drawerToggle");
+    await tab.tap("a[data-route='converter/temperature']");
+    await waitFor(tab, `document.documentElement.dataset.route === "converter/temperature"`);
+    const nav = await json(tab, `({ hash: location.hash, title: document.getElementById("routeTitle").textContent, drawerHidden: document.getElementById("drawer").hidden })`);
+    expect("shell.drawer-link-navigates", nav.hash === "#/converter/temperature" && nav.title === "Temperature" && nav.drawerHidden, JSON.stringify(nav));
+
+    // Shortcuts.
+    await tab.key("5", { alt: true });
+    await waitFor(tab, `document.documentElement.dataset.route === "date"`);
+    await tab.key("2", { alt: true });
+    const sc = await waitFor(tab, `document.documentElement.dataset.route === "scientific" && document.getElementById("routeTitle").textContent`);
+    expect("shell.alt-digit-shortcuts", sc === "Scientific", `Alt+5 then Alt+2 -> ${sc}`);
+
+    // The pane is a bottom sheet on a phone.
+    await tab.key("h", { ctrl: true });
+    const pane = await json(tab, BOX("pane"));
+    const close = await json(tab, `(() => { const r = document.getElementById("paneClose").getBoundingClientRect(); return { w: r.width, h: r.height, top: r.top }; })()`);
+    expect(
+      "shell.pane-bottom-sheet",
+      !pane.hidden && pane.role === "dialog" && Math.abs(pane.bottom - pane.vh) <= 1 && pane.left <= 0.5 && Math.abs(pane.right - pane.vw) <= 0.5 && pane.top >= pane.vh * 0.25 - 1 && pane.focusInside && close.w >= 44 && close.h >= 44,
+      JSON.stringify({ pane, close })
+    );
+    await tab.key("Escape");
+    const paneClosed = await json(tab, BOX("pane"));
+    expect("shell.pane-escape-closes", paneClosed.hidden && !paneClosed.focusInside && !paneClosed.viewInert, JSON.stringify(paneClosed));
+
+    // Theme: instant switch, saved, pre-painted on the next load.
+    await pickTheme(tab, "retro");
+    const now = await json(tab, `({ theme: document.documentElement.dataset.theme, bg: getComputedStyle(document.documentElement).backgroundColor, token: getComputedStyle(document.documentElement).getPropertyValue("--bg").trim(), mirror: localStorage.getItem("pcalc.theme") })`);
+    expect("theme.switch-is-instant", now.theme === "retro" && now.bg === "rgb(0, 128, 128)" && now.token.toUpperCase() === "#008080" && now.mirror === "retro", JSON.stringify(now));
+    const stored = await waitFor(tab, `${IDB_GET("settings")}.then((v) => v && v.includes('"theme":"retro"') ? v : null)`);
+    expect("theme.saved-in-indexeddb", Boolean(stored), String(stored).slice(0, 80));
+    const reloaded = await tab.navigate(url);
+    const fp = await json(tab, "window.__pcalcFirstPaint");
+    expect("theme.prepainted-no-flash", fp.themeAtBody === "retro" && fp.themeAtFirstFrame === "retro" && fp.bgAtFirstFrame === "rgb(0, 128, 128)", JSON.stringify(fp));
+    expect("shell.last-route-restored", reloaded.boot === "ok" && reloaded.route === "settings" && reloaded.title === "Settings", `route=${reloaded.route} title=${reloaded.title}`);
+    const docs = await json(tab, `Promise.all(["settings", "state"].map((k) => ${IDB_GET("k").replace('"k"', "k")}))`);
+    expect("store.indexeddb-holds-settings-and-state", docs.every((d) => typeof d === "string" && d.startsWith('{"schemaVersion":1')), docs.map((d) => String(d).slice(0, 40)).join(" | "));
+
+    // Sync: a second tab follows the theme through BroadcastChannel.
+    const second = await openPage(edge, url, { keepOpen: true });
+    await pickTheme(tab, "daylight");
+    const follows = await waitFor(second.tab, `document.documentElement.dataset.theme === "daylight"`, 3000);
+    expect("sync.second-tab-follows-theme", follows === true, `second tab theme ${await second.tab.evaluate("document.documentElement.dataset.theme")}`);
+    await second.tab.close();
+    await pickTheme(tab, "system");
+    expect("shell.no-console-errors", errorCount(tab.logs) === 0, describeLogs(tab.logs));
+    await tab.close();
+  } finally {
+    await edge.close();
+  }
+}
+
+async function layoutChecks(edgePath, url, shots) {
+  const edge = await launchEdge(edgePath, []);
+  const saved = [];
+  try {
+    const { tab } = await openPage(edge, url, { keepOpen: true });
+    const record = async (id, extra = () => null) => {
+      const l = await json(tab, LAYOUT);
+      const more = await extra(l);
+      const ok = l.scrollWidth <= l.vw && l.outside.length === 0 && l.small.length === 0 && l.clipped.length === 0 && !more;
+      expect(`layout.${id}`, ok, JSON.stringify({ scrollWidth: l.scrollWidth, vw: l.vw, outside: l.outside.slice(0, 4), small: l.small.slice(0, 4), clipped: l.clipped.slice(0, 4), more }));
+      if (shots) {
+        const path = join(shots, `${id.replace(/[^a-z0-9-]+/gi, "_")}.png`);
+        await tab.screenshot(path);
+        saved.push(path);
+      }
+    };
+    const openDrawer = async () => {
+      await tab.evaluate(`document.getElementById("drawerToggle").focus(); true`);
+      await tab.tap("#drawerToggle");
+    };
+    for (const width of [360, 390, 440]) {
+      await tab.viewport(width, 800);
+      for (const route of ["standard", "settings", "about", "converter/temperature"]) {
+        await goRoute(tab, route);
+        await record(`${width}.${route.replace("/", "-")}`);
+      }
+      await goRoute(tab, "standard");
+      await openDrawer();
+      await record(`${width}.drawer-open`);
+      await tab.key("Escape");
+      await goRoute(tab, "date");
+      await tab.key("h", { ctrl: true });
+      await record(`${width}.pane-open`);
+      await tab.key("Escape");
+      for (const theme of ["daylight", "retro"]) {
+        await pickTheme(tab, theme);
+        await record(`${width}.settings-${theme}`);
+        await openDrawer();
+        await record(`${width}.drawer-${theme}`);
+        await tab.key("Escape");
+      }
+      await pickTheme(tab, "terminal");
+      await pickPseudo(tab, "en-XA");
+      await record(`${width}.en-XA-settings`);
+      await goRoute(tab, "about");
+      await record(`${width}.en-XA-about`);
+      await openDrawer();
+      await record(`${width}.en-XA-drawer`);
+      await tab.key("Escape");
+      await pickPseudo(tab, "ar-XB");
+      await record(`${width}.ar-XB-settings`, (l) => (l.dir === "rtl" ? null : `dir ${l.dir}`));
+      await openDrawer();
+      await record(`${width}.ar-XB-drawer`, async () => {
+        const d = await json(tab, BOX("drawer"));
+        return Math.abs(d.right - d.vw) <= 0.5 && d.left > 0 ? null : `drawer not at the right edge: ${Math.round(d.left)}..${Math.round(d.right)}`;
+      });
+      await tab.key("Escape");
+      await goRoute(tab, "date");
+      await tab.key("h", { ctrl: true });
+      await record(`${width}.ar-XB-pane-open`);
+      await tab.key("Escape");
+      await pickPseudo(tab, "off");
+    }
+    // Overlay pane (760-1100) and the docked layout (>= 1100).
+    await tab.viewport(900, 800, false);
+    await goRoute(tab, "about");
+    await tab.key("h", { ctrl: true });
+    await record("900.pane-overlay", async () => {
+      const p = await json(tab, BOX("pane"));
+      return p.role === "dialog" && Math.abs(p.right - p.vw) <= 0.5 && p.top <= 0.5 && Math.abs(p.bottom - p.vh) <= 1 && p.width <= 320.5 ? null : JSON.stringify(p);
+    });
+    await tab.key("Escape");
+    await tab.viewport(1280, 800, false);
+    await goRoute(tab, "settings");
+    await tab.key("h", { ctrl: true });
+    await record("1280.docked", async () => {
+      const d = await json(tab, BOX("drawer"));
+      const p = await json(tab, BOX("pane"));
+      const toggle = await tab.evaluate(`document.getElementById("drawerToggle").hidden`);
+      return !d.hidden && d.role === null && !p.hidden && p.role === null && toggle && !p.viewInert ? null : JSON.stringify({ d, p, toggle });
+    });
+    await tab.key("h", { ctrl: true });
+    expect("layout.no-console-errors", errorCount(tab.logs) === 0, describeLogs(tab.logs));
+    await tab.close();
+  } finally {
+    await edge.close();
+  }
+  return saved;
+}
+
+// Build N+1: a copy of web/ with one changed byte, built into target/.
+function buildNext(dist, info) {
+  const work = join(ROOT, "target", "browser-boot");
+  rmSync(work, { recursive: true, force: true });
+  cpSync(join(ROOT, "web"), join(work, "web-next"), { recursive: true });
+  const css = join(work, "web-next", "styles", "components.css");
+  writeFileSync(css, readFileSync(css, "utf8") + "\n/* upgrade test: build N+1 */\n");
+  const r = spawnSync(
+    process.execPath,
+    [join(ROOT, "scripts", "build-web.mjs"), "--web", join(work, "web-next"), "--out", join(work, "dist-next"), "--wasm", join(dist, info.web.wasm.file)],
+    { encoding: "utf8" }
+  );
+  if (r.status !== 0) throw new Error(`building N+1 failed: ${r.stdout}${r.stderr}`);
+  return { dir: join(work, "dist-next"), info: JSON.parse(readFileSync(join(work, "dist-next", "build-info.json"), "utf8")) };
+}
+
+const CACHES_SETTLED = (want) => `(async () => {
+  const end = Date.now() + 15000;
+  for (;;) {
+    const keys = (await caches.keys()).filter((k) => k.startsWith("pcalc-"));
+    if (navigator.serviceWorker.controller && keys.length === 1 && keys[0] === ${JSON.stringify(want)}) return keys;
+    if (Date.now() > end) return keys;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+})()`;
+
+const LOADED = `(() => ({ cssFile: window.PCalc.build.cssFile, assets: document.documentElement.dataset.assets,
+  files: performance.getEntriesByType("resource").map((e) => new URL(e.name).pathname.split("/").pop()).filter((f) => /^(app|engine)\\./.test(f)) }))()`;
+
+async function upgradeChecks(edgePath, dist, info) {
+  const n = info.web;
+  const next = buildNext(dist, info);
+  const n1 = next.info.web;
+  const css = (w) => w.css.file.replace(/^web\//, "");
+  const assetSet = (w) => new Set(w.assets);
+  expect("upgrade.builds-differ", n.cacheName !== n1.cacheName && css(n) !== css(n1) && n.wasm.file === n1.wasm.file, `${n.cacheName} -> ${n1.cacheName}`);
+
+  const server = await startStaticServer({ dir: join(dist, "web") });
+  const edge = await launchEdge(edgePath, []);
+  let open = true;
+  try {
+    const { tab, state } = await openPage(edge, server.url, { keepOpen: true });
+    const keysN = await json(tab, CACHES_SETTLED(n.cacheName));
+    expect("upgrade.n-boots-and-caches", state.boot === "ok" && keysN.length === 1 && keysN[0] === n.cacheName, `boot ${state.boot}, caches ${keysN.join(",")}`);
+
+    server.setDir(join(next.dir, "web"));
+    const online = await tab.navigate(server.url);
+    const loadedOnline = await json(tab, LOADED);
+    const mixedOnline = loadedOnline.files.filter((f) => !assetSet(n1).has(f));
+    expect(
+      "upgrade.n1-online-boots-with-only-its-assets",
+      online.boot === "ok" && loadedOnline.cssFile === css(n1) && loadedOnline.assets === "consistent" && mixedOnline.length === 0,
+      `boot ${online.boot}, css ${loadedOnline.cssFile}, foreign files ${mixedOnline.join(",") || "none"}`
+    );
+    await tab.evaluate(`navigator.serviceWorker.getRegistration().then((r) => r && r.update()).then(() => true, () => true)`);
+    const keysN1 = await json(tab, CACHES_SETTLED(n1.cacheName));
+    expect("upgrade.worker-replaces-the-old-cache", keysN1.length === 1 && keysN1[0] === n1.cacheName, `caches ${keysN1.join(",")}`);
+
+    await server.close();
+    open = false;
+    const offline = await tab.navigate(server.url + "#/about");
+    const loadedOffline = await json(tab, LOADED);
+    const mixedOffline = loadedOffline.files.filter((f) => !assetSet(n1).has(f));
+    expect(
+      "upgrade.n1-offline-boots-from-its-cache",
+      offline.boot === "ok" && offline.route === "about" && loadedOffline.cssFile === css(n1) && loadedOffline.assets === "consistent" && mixedOffline.length === 0,
+      `boot ${offline.boot}, route ${offline.route}, css ${loadedOffline.cssFile}, foreign files ${mixedOffline.join(",") || "none"}`
+    );
+    // Offline, the browser logs the failed network attempts the worker
+    // falls back from; nothing else may be logged.
+    const other = tab.logs.consoleErrors.length + tab.logs.exceptions.length + tab.logs.logErrors.filter((e) => e.source !== "network").length;
+    expect("upgrade.no-console-errors", other === 0, describeLogs(tab.logs));
+    await tab.close();
+  } finally {
+    await edge.close();
+    if (open) await server.close();
+  }
 }
 
 function stats(list) {
@@ -444,7 +856,18 @@ async function main() {
   } finally {
     await edge.close();
   }
+  // The shell, its layouts and the service-worker upgrade, each in its own
+  // throwaway profile on its own origin.
+  await shellChecks(edgePath, good.url);
   await Promise.all([good.close(), tampered.close(), blocked.close()]);
+  const layoutServer = await startStaticServer({ dir: join(opts.dist, "web") });
+  let screenshots = [];
+  try {
+    screenshots = await layoutChecks(edgePath, layoutServer.url, opts.shots);
+  } finally {
+    await layoutServer.close();
+  }
+  if (opts.upgrade) await upgradeChecks(edgePath, opts.dist, info);
 
   const failed = results.filter((r) => r.status === "fail");
   for (const r of results) console.log(`${r.status === "pass" ? "PASS" : "FAIL"} ${r.id}${r.status === "pass" ? "" : ": " + r.detail}`);
@@ -453,7 +876,8 @@ async function main() {
   for (const [name, t] of Object.entries(timing)) {
     console.log(`boot ${name}: data-boot-ms first ${t.bootMs.first}, median ${t.bootMs.median}, max ${t.bootMs.max} over ${t.bootMs.runs} runs (first navigate-to-verdict ${t.wallFirstMs} ms)`);
   }
-  const summary = { browser, edgePath, passed: results.length - failed.length, failed: failed.length, timing, engine: info.web.wasm, single: info.single.html, results };
+  if (screenshots.length) console.log(`screenshots: ${screenshots.length} PNG files in ${opts.shots}`);
+  const summary = { browser, edgePath, passed: results.length - failed.length, failed: failed.length, timing, engine: info.web.wasm, single: info.single.html, screenshots, results };
   if (opts.json) {
     mkdirSync(dirname(opts.json), { recursive: true });
     writeFileSync(opts.json, JSON.stringify(summary, null, 2) + "\n");
