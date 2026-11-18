@@ -6,7 +6,7 @@
 - Canonical project home: local repository `D:\Claude Projects\Portable Calculator Tool` (branches `main` and `dev`), remote `origin` = public GitHub repository [CipherVaults/Portable-Calculator-Tool](https://github.com/CipherVaults/Portable-Calculator-Tool), created by the coordinating session on the owner's yes on 2026-11-18 (recorded in the Date repo's CONTINUATION_STATE, commit `2b24700`). Observed 2026-11-18: `origin/main` = `659311e` (workflow-free), `origin/dev` = `482e52d`; later local `dev` commits are pushed by the coordinator. Repository entry: [AGENTS.md](../../AGENTS.md).
 - Chosen granularity: combined small-project checkpoint. [Continuation](CONTINUATION_STATE.md) owns unfinished milestone work; the [Execution & Coding Ledger](EXECUTION_AND_CODING_LEDGER.md) owns execution evidence.
 - State owner: coordinating maintainer (Claude Code, Opus 5.5); the project owner (Ahmed) decides acceptance.
-- As of: **2026-11-18**: M0 done on `dev` (Ledger E-01, E-02; CI run 44254904073 green on `482e52d`), plus the M0 review fixes and the D-slice (E-03, verified locally, CI pending its push). App version `0.1.0` (development). No release and no Pages site.
+- As of: **2026-11-18**: M0 done on `dev` (Ledger E-01, E-02; CI run 44254904073 green on `482e52d`), plus the M0 review fixes and the D-slice (E-03), M1 (E-04) and M2a (E-05), verified locally, CI pending their push. App version `0.1.0` (development). No release and no Pages site.
 
 ## Accepted present
 
@@ -27,6 +27,6 @@
 
 ## Operational orientation
 
-- Current phase: **M0 done (E-01 to E-03); M1 done locally (E-04: random native-vs-WASM diff, per-op caps, Edge boot proof with the rescue view, sizes and IPC timing; WebKit/Gecko stay manual); M2a next**. Live operational source: the working tree and `git log` on `dev`.
+- Current phase: **M0 done (E-01 to E-03); M1 done locally (E-04); M2a done locally (E-05: phone-first shell, theme and i18n infrastructure, store validators, desktop and IndexedDB stores, service worker with the upgrade test; WebKit/Gecko stay manual); M2b (Date port) next**. Live operational source: the working tree and `git log` on `dev`.
 - Source/owner map: [SOURCE_OWNERSHIP_MAP.md](SOURCE_OWNERSHIP_MAP.md).
 - Unaccepted work pointer: [CONTINUATION_STATE.md](CONTINUATION_STATE.md).
