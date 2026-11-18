@@ -1,0 +1,7 @@
+# Pinned toolchain: the stable channel installed when M0 started.
+# wasm32-unknown-unknown builds engine.wasm for the web app (plan B3).
+[toolchain]
+channel = "1.99.1"
+targets = ["x86_64-pc-windows-msvc", "wasm32-unknown-unknown"]
+components = ["rustfmt", "clippy"]
+profile = "minimal"

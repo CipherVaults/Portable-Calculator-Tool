@@ -1,0 +1,766 @@
+//! Pure percentage calculation helpers.
+//!
+//! Kept free of any UI or Tauri dependency so the formulas can be unit-tested
+//! on their own (`cargo test -p percent-core`) and verified byte-for-byte
+//! against the original v1.1 JavaScript implementation.
+#![forbid(unsafe_code)]
+
+use serde::{Deserialize, Serialize};
+
+/// Engine version, equal to the crate version (asserted by a test). It
+/// changes only when engine behaviour changes.
+pub const ENGINE_VERSION: &str = "2.3.0";
+
+/// Outcome of a single-value percentage calculation.
+///
+/// Serializes to the same JSON shape the v1.1 renderer used (`{ ok, value, label }`
+/// or `{ ok: false, error }`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "ok")]
+pub enum CalcResult {
+    #[serde(rename = "true")]
+    Ok {
+        value: f64,
+        label: String,
+        /// Extra formatted text used by the Percentage Change live-result line
+        /// (`"{abs}% increase|decrease|no change"`). Matches `label` for all
+        /// other calculators.
+        #[serde(rename = "liveResult")]
+        live_result: String,
+    },
+    #[serde(rename = "false")]
+    Err { error: &'static str },
+}
+
+/// Outcome of the Discount calculator, which produces two numbers (final price
+/// and amount saved) plus two formatted lines.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DiscountResult {
+    pub ok: bool,
+    #[serde(rename = "finalPrice")]
+    pub final_price: f64,
+    pub saved: f64,
+    #[serde(rename = "finalText")]
+    pub final_text: String,
+    #[serde(rename = "savedText")]
+    pub saved_text: String,
+    pub label: String,
+    #[serde(rename = "copyText")]
+    pub copy_text: String,
+}
+
+/// Outcome of the Markup & Profit Margin calculator.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "ok")]
+pub enum MarkupMarginResult {
+    #[serde(rename = "true")]
+    Ok {
+        profit: f64,
+        markup: f64,
+        margin: f64,
+        #[serde(rename = "profitText")]
+        profit_text: String,
+        #[serde(rename = "markupText")]
+        markup_text: String,
+        #[serde(rename = "marginText")]
+        margin_text: String,
+        label: String,
+        #[serde(rename = "liveResult")]
+        live_result: String,
+        #[serde(rename = "copyText")]
+        copy_text: String,
+    },
+    #[serde(rename = "false")]
+    Err { error: &'static str },
+}
+
+/// Mode for the Tax / VAT calculator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TaxMode {
+    Add,
+    Extract,
+}
+
+/// Outcome of the Tax / VAT calculator (add tax to net or extract tax from gross).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "ok")]
+pub enum TaxResult {
+    #[serde(rename = "true")]
+    Ok {
+        net: f64,
+        tax: f64,
+        total: f64,
+        #[serde(rename = "netText")]
+        net_text: String,
+        #[serde(rename = "taxText")]
+        tax_text: String,
+        #[serde(rename = "totalText")]
+        total_text: String,
+        label: String,
+        #[serde(rename = "liveResult")]
+        live_result: String,
+        #[serde(rename = "copyText")]
+        copy_text: String,
+    },
+    #[serde(rename = "false")]
+    Err { error: &'static str },
+}
+
+/// Outcome of splitting a bill, including its tip, between whole people.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "ok")]
+pub enum TipSplitResult {
+    #[serde(rename = "true")]
+    Ok {
+        #[serde(rename = "tipAmount")]
+        tip_amount: f64,
+        #[serde(rename = "totalBill")]
+        total_bill: f64,
+        #[serde(rename = "perPerson")]
+        per_person: f64,
+        #[serde(rename = "tipText")]
+        tip_text: String,
+        #[serde(rename = "totalText")]
+        total_text: String,
+        #[serde(rename = "perPersonText")]
+        per_person_text: String,
+        label: String,
+        #[serde(rename = "liveResult")]
+        live_result: String,
+        #[serde(rename = "copyText")]
+        copy_text: String,
+    },
+    #[serde(rename = "false")]
+    Err { error: &'static str },
+}
+
+/// JavaScript-identical `Math.round(x)`:
+/// ties (`.5`) round toward `+∞` (`js_round(-2.5) == -2.0`), whereas Rust's
+/// `f64::round` rounds ties away from zero (`(-2.5_f64).round() == -3.0`),
+/// and `0.49999999999999994` rounds to `0.0` (not `1.0` as `(x + 0.5).floor()`
+/// would produce due to `0.49999999999999994 + 0.5 == 1.0` in IEEE-754).
+#[inline]
+pub fn js_round(x: f64) -> f64 {
+    if !x.is_finite() || x == 0.0 {
+        return x;
+    }
+    // In [-0.5, 0), Math.round returns -0 (which formats as "0.00").
+    if (-0.5..0.0).contains(&x) {
+        return -0.0;
+    }
+    // In (0, 0.5), Math.round returns +0 without `(x + 0.5)` rounding to 1.0.
+    if (0.0..0.5).contains(&x) {
+        return 0.0;
+    }
+    // Above 2^52 every f64 is already an integer, and `x + 0.5` could double-round.
+    if x.abs() >= 4_503_599_627_370_496.0 {
+        return x;
+    }
+    let floor_val = x.floor();
+    if (x - floor_val) >= 0.5 {
+        floor_val + 1.0
+    } else {
+        floor_val
+    }
+}
+
+/// Formats a number to two decimal places using the exact same steps as the
+/// v1.1 JS `formatDecimal`:
+/// `const rounded = Math.round(value * 100) / 100; return rounded.toFixed(2);`
+pub fn format_decimal(value: f64) -> String {
+    if value.is_nan() {
+        return "?".to_string();
+    }
+    let rounded = js_round(value * 100.0) / 100.0;
+    if !rounded.is_finite() {
+        return if rounded.is_sign_negative() {
+            "-Infinity".to_string()
+        } else {
+            "Infinity".to_string()
+        };
+    }
+    // Normalise -0.0 so `format!("{:.2}", -0.0)` never emits "-0.00".
+    let clean = if rounded == 0.0 { 0.0 } else { rounded };
+    // Match JS `Number.prototype.toFixed(2)` switching to exponential notation
+    // at 1e21.
+    if clean.abs() >= 1e21 {
+        return js_exponential(clean);
+    }
+    js_to_fixed_2(clean)
+}
+
+/// Matches ECMAScript `Number.prototype.toFixed(2)`: rounds the exact decimal
+/// representation of the `f64` to 2 fractional digits with ties rounded away
+/// from zero (whereas Rust's `format!("{:.2}")` rounds ties to even).
+fn js_to_fixed_2(x: f64) -> String {
+    let scaled8 = x.abs() * 8.0;
+    if scaled8 < (u64::MAX as f64) && scaled8.fract() == 0.0 {
+        let k = scaled8 as u128;
+        if k % 2 == 1 {
+            // Exact value is k / 8 = (k * 125) / 1000. Adding 5 rounds the
+            // thousandths digit (always 5 for odd k) away from zero.
+            let sign = if x.is_sign_negative() { "-" } else { "" };
+            let cents = (k * 125 + 5) / 10;
+            return format!("{sign}{}.{:02}", cents / 100, cents % 100);
+        }
+    }
+    format!("{x:.2}")
+}
+
+fn js_exponential(x: f64) -> String {
+    let sign = if x.is_sign_negative() { "-" } else { "" };
+    let s = format!("{:e}", x.abs());
+    let (mantissa, exp) = s.split_once('e').expect("scientific notation");
+    let exp_num: i32 = exp.parse().expect("exponent");
+    let exp_sign = if exp_num >= 0 { '+' } else { '-' };
+    format!("{sign}{mantissa}e{exp_sign}{}", exp_num.unsigned_abs())
+}
+
+/// Percentage change from `original_value` to `new_value`:
+/// `((new - original) / original) * 100`.
+pub fn calculate_percentage_change(original_value: f64, new_value: f64) -> CalcResult {
+    if original_value == 0.0 {
+        return CalcResult::Err {
+            error: "Original value cannot be zero",
+        };
+    }
+
+    let value = ((new_value - original_value) / original_value) * 100.0;
+    let abs_text = format_decimal(value.abs());
+
+    let suffix = if value > 0.0 {
+        "increase"
+    } else if value < 0.0 {
+        "decrease"
+    } else {
+        "no change"
+    };
+
+    let label = if value != 0.0 && !value.is_nan() {
+        format!("{abs_text}% {suffix}")
+    } else {
+        "0.00% no change".to_string()
+    };
+    let live_result = format!("{abs_text}% {suffix}");
+
+    CalcResult::Ok {
+        value,
+        label,
+        live_result,
+    }
+}
+
+/// What percentage `part` is of `total`: `(part / total) * 100`.
+pub fn calculate_percentage_of_total(part: f64, total: f64) -> CalcResult {
+    if total == 0.0 {
+        return CalcResult::Err {
+            error: "Total cannot be zero",
+        };
+    }
+
+    let value = (part / total) * 100.0;
+    let label = format!("{}%", format_decimal(value));
+    CalcResult::Ok {
+        value,
+        live_result: label.clone(),
+        label,
+    }
+}
+
+/// `percent`% of `number`: `(percent / 100) * number`.
+pub fn calculate_percentage_portion(percent: f64, number: f64) -> CalcResult {
+    let value = (percent / 100.0) * number;
+    let label = format_decimal(value);
+    CalcResult::Ok {
+        value,
+        live_result: label.clone(),
+        label,
+    }
+}
+
+/// Final price and amount saved after applying `discount_percent`% to `price`.
+pub fn calculate_discount(price: f64, discount_percent: f64) -> DiscountResult {
+    let saved = price * (discount_percent / 100.0);
+    let final_price = price - saved;
+    let final_text = format_decimal(final_price);
+    let saved_text = format_decimal(saved);
+    let label = format!("Final: {final_text}<br>Saved: {saved_text}");
+    let copy_text = format!("Final: {final_text}\nSaved: {saved_text}");
+
+    DiscountResult {
+        ok: true,
+        final_price,
+        saved,
+        final_text,
+        saved_text,
+        label,
+        copy_text,
+    }
+}
+
+/// Finds the full value when `value` is `percent`% of it: `value / (percent / 100)`.
+pub fn calculate_original_value(value: f64, percent: f64) -> CalcResult {
+    if percent == 0.0 {
+        return CalcResult::Err {
+            error: "Percent cannot be zero",
+        };
+    }
+
+    let original_value = value / (percent / 100.0);
+    let label = format_decimal(original_value);
+    CalcResult::Ok {
+        value: original_value,
+        live_result: label.clone(),
+        label,
+    }
+}
+
+/// Calculates profit, markup %, and profit margin % from `cost` and `selling_price`:
+/// - `profit = selling_price - cost`
+/// - `markup = (profit / cost) * 100`
+/// - `margin = (profit / selling_price) * 100`
+pub fn calculate_markup_margin(cost: f64, selling_price: f64) -> MarkupMarginResult {
+    if cost == 0.0 {
+        return MarkupMarginResult::Err {
+            error: "Cost cannot be zero",
+        };
+    }
+    if selling_price == 0.0 {
+        return MarkupMarginResult::Err {
+            error: "Selling price cannot be zero",
+        };
+    }
+
+    let profit = selling_price - cost;
+    let markup = (profit / cost) * 100.0;
+    let margin = (profit / selling_price) * 100.0;
+
+    let profit_text = format_decimal(profit);
+    let markup_text = format!("{}%", format_decimal(markup));
+    let margin_text = format!("{}%", format_decimal(margin));
+
+    let label = format!("Profit: {profit_text}<br>Markup: {markup_text} · Margin: {margin_text}");
+    let live_result =
+        format!("Profit: {profit_text} | Markup: {markup_text} | Margin: {margin_text}");
+    let copy_text = format!("Profit: {profit_text}\nMarkup: {markup_text}\nMargin: {margin_text}");
+
+    MarkupMarginResult::Ok {
+        profit,
+        markup,
+        margin,
+        profit_text,
+        markup_text,
+        margin_text,
+        label,
+        live_result,
+        copy_text,
+    }
+}
+
+/// Adds tax (`TaxMode::Add`) or extracts tax from a tax-inclusive gross total
+/// (`TaxMode::Extract`).
+pub fn calculate_tax(amount: f64, rate_percent: f64, mode: TaxMode) -> TaxResult {
+    match mode {
+        TaxMode::Add => {
+            let net = amount;
+            let tax = amount * (rate_percent / 100.0);
+            let total = amount + tax;
+            let net_text = format_decimal(net);
+            let tax_text = format_decimal(tax);
+            let total_text = format_decimal(total);
+            let label = format!("Total: {total_text}<br>Tax: {tax_text} (Net: {net_text})");
+            let live_result = format!("Total: {total_text} | Tax: {tax_text}");
+            let copy_text = format!("Total: {total_text}\nTax: {tax_text}\nNet: {net_text}");
+
+            TaxResult::Ok {
+                net,
+                tax,
+                total,
+                net_text,
+                tax_text,
+                total_text,
+                label,
+                live_result,
+                copy_text,
+            }
+        }
+        TaxMode::Extract => {
+            let divisor = 100.0 + rate_percent;
+            if divisor == 0.0 {
+                return TaxResult::Err {
+                    error: "Tax rate cannot be -100%",
+                };
+            }
+            let total = amount;
+            let net = (amount * 100.0) / divisor;
+            let tax = amount - net;
+            let net_text = format_decimal(net);
+            let tax_text = format_decimal(tax);
+            let total_text = format_decimal(total);
+            let label = format!("Net: {net_text}<br>Tax: {tax_text} (Total: {total_text})");
+            let live_result = format!("Net: {net_text} | Tax: {tax_text}");
+            let copy_text = format!("Net: {net_text}\nTax: {tax_text}\nTotal: {total_text}");
+
+            TaxResult::Ok {
+                net,
+                tax,
+                total,
+                net_text,
+                tax_text,
+                total_text,
+                label,
+                live_result,
+                copy_text,
+            }
+        }
+    }
+}
+
+/// Computes a tip and splits the total bill without rounding intermediate values.
+pub fn calculate_tip_split(bill: f64, tip_percent: f64, people: f64) -> TipSplitResult {
+    if bill < 0.0 {
+        return TipSplitResult::Err {
+            error: "Bill amount cannot be negative",
+        };
+    }
+    if tip_percent < 0.0 {
+        return TipSplitResult::Err {
+            error: "Tip % cannot be negative",
+        };
+    }
+    if !people.is_finite() || people < 1.0 || people.fract() != 0.0 {
+        return TipSplitResult::Err {
+            error: "People must be a whole number (1 or more)",
+        };
+    }
+
+    let tip_amount = bill * (tip_percent / 100.0);
+    let total_bill = bill + tip_amount;
+    let per_person = total_bill / people;
+    let tip_text = format_decimal(tip_amount);
+    let total_text = format_decimal(total_bill);
+    let per_person_text = format_decimal(per_person);
+    let label = format!("Each: {per_person_text}<br>Total: {total_text} · Tip: {tip_text}");
+    let live_result = format!("Each: {per_person_text} · Total: {total_text}");
+    let copy_text = format!("Each: {per_person_text}\nTotal: {total_text} · Tip: {tip_text}");
+
+    TipSplitResult::Ok {
+        tip_amount,
+        total_bill,
+        per_person,
+        tip_text,
+        total_text,
+        per_person_text,
+        label,
+        live_result,
+        copy_text,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn engine_version_matches_crate_version() {
+        assert_eq!(ENGINE_VERSION, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn tip_split_zero_tip_and_multiple_people() {
+        assert_eq!(
+            calculate_tip_split(100.0, 20.0, 3.0),
+            TipSplitResult::Ok {
+                tip_amount: 20.0,
+                total_bill: 120.0,
+                per_person: 40.0,
+                tip_text: "20.00".into(),
+                total_text: "120.00".into(),
+                per_person_text: "40.00".into(),
+                label: "Each: 40.00<br>Total: 120.00 · Tip: 20.00".into(),
+                live_result: "Each: 40.00 · Total: 120.00".into(),
+                copy_text: "Each: 40.00\nTotal: 120.00 · Tip: 20.00".into(),
+            }
+        );
+        let TipSplitResult::Ok {
+            tip_amount,
+            total_bill,
+            per_person,
+            ..
+        } = calculate_tip_split(75.0, 0.0, 1.0)
+        else {
+            panic!("valid bill rejected")
+        };
+        assert_eq!((tip_amount, total_bill, per_person), (0.0, 75.0, 75.0));
+    }
+
+    #[test]
+    fn tip_split_domain_guards() {
+        assert_eq!(
+            calculate_tip_split(-1.0, -1.0, 0.0),
+            TipSplitResult::Err {
+                error: "Bill amount cannot be negative",
+            }
+        );
+        assert_eq!(
+            calculate_tip_split(1.0, -1.0, 0.0),
+            TipSplitResult::Err {
+                error: "Tip % cannot be negative",
+            }
+        );
+        for people in [
+            0.0,
+            -0.0,
+            -1.0,
+            0.5,
+            1.5,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+        ] {
+            assert_eq!(
+                calculate_tip_split(100.0, 15.0, people),
+                TipSplitResult::Err {
+                    error: "People must be a whole number (1 or more)",
+                },
+                "people={people:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tip_split_normalizes_signed_zero_and_rounds_only_outputs() {
+        for (bill, tip, people, texts) in [
+            (-0.0, -0.0, 2.0, ["0.00", "0.00", "0.00"]),
+            (0.05, 50.0, 3.0, ["0.03", "0.08", "0.03"]),
+            (1.005, 0.0, 1.0, ["0.00", "1.00", "1.00"]),
+            (10.0, 0.0, 3.0, ["0.00", "10.00", "3.33"]),
+        ] {
+            let TipSplitResult::Ok {
+                tip_text,
+                total_text,
+                per_person_text,
+                ..
+            } = calculate_tip_split(bill, tip, people)
+            else {
+                panic!("valid bill rejected")
+            };
+            assert_eq!([tip_text, total_text, per_person_text], texts);
+        }
+    }
+
+    // --- Direct port of tests/calculations.test.js (Vitest) ---
+
+    #[test]
+    fn format_decimal_two_places() {
+        assert_eq!(format_decimal(25.0), "25.00");
+        assert_eq!(format_decimal(12.345), "12.35");
+        assert_eq!(format_decimal(f64::NAN), "?");
+    }
+
+    #[test]
+    fn js_rounding_ties_toward_pos_infinity() {
+        // -2.5 rounds to -2 in JS Math.round (not -3 as in f64::round).
+        assert_eq!(js_round(-2.5), -2.0);
+        assert_eq!(js_round(2.5), 3.0);
+        assert_eq!(format_decimal(-0.025), "-0.02");
+        assert_eq!(format_decimal(0.025), "0.03");
+        assert_eq!(format_decimal(-0.001), "0.00");
+    }
+
+    #[test]
+    fn percentage_change_increase_decrease_zero() {
+        assert_eq!(
+            calculate_percentage_change(150.0, 180.0),
+            CalcResult::Ok {
+                value: 20.0,
+                label: "20.00% increase".into(),
+                live_result: "20.00% increase".into(),
+            }
+        );
+        assert_eq!(
+            calculate_percentage_change(200.0, 150.0),
+            CalcResult::Ok {
+                value: -25.0,
+                label: "25.00% decrease".into(),
+                live_result: "25.00% decrease".into(),
+            }
+        );
+        assert_eq!(
+            calculate_percentage_change(100.0, 100.0),
+            CalcResult::Ok {
+                value: 0.0,
+                label: "0.00% no change".into(),
+                live_result: "0.00% no change".into(),
+            }
+        );
+        assert_eq!(
+            calculate_percentage_change(0.0, 150.0),
+            CalcResult::Err {
+                error: "Original value cannot be zero"
+            }
+        );
+    }
+
+    #[test]
+    fn percentage_of_total_works_and_rejects_zero() {
+        assert_eq!(
+            calculate_percentage_of_total(50.0, 200.0),
+            CalcResult::Ok {
+                value: 25.0,
+                label: "25.00%".into(),
+                live_result: "25.00%".into(),
+            }
+        );
+        assert_eq!(
+            calculate_percentage_of_total(50.0, 0.0),
+            CalcResult::Err {
+                error: "Total cannot be zero"
+            }
+        );
+    }
+
+    #[test]
+    fn percentage_portion_works() {
+        assert_eq!(
+            calculate_percentage_portion(20.0, 500.0),
+            CalcResult::Ok {
+                value: 100.0,
+                label: "100.00".into(),
+                live_result: "100.00".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn discount_final_and_saved() {
+        let r = calculate_discount(79.99, 20.0);
+        assert!(r.ok);
+        assert!((r.final_price - 63.992).abs() < 1e-9);
+        assert!((r.saved - 15.998).abs() < 1e-9);
+        assert_eq!(r.final_text, "63.99");
+        assert_eq!(r.saved_text, "16.00");
+        assert_eq!(r.label, "Final: 63.99<br>Saved: 16.00");
+        assert_eq!(r.copy_text, "Final: 63.99\nSaved: 16.00");
+    }
+
+    #[test]
+    fn original_value_works_and_rejects_zero() {
+        assert_eq!(
+            calculate_original_value(50.0, 25.0),
+            CalcResult::Ok {
+                value: 200.0,
+                label: "200.00".into(),
+                live_result: "200.00".into(),
+            }
+        );
+        assert_eq!(
+            calculate_original_value(50.0, 0.0),
+            CalcResult::Err {
+                error: "Percent cannot be zero"
+            }
+        );
+    }
+
+    #[test]
+    fn markup_and_margin_works_and_rejects_zeros() {
+        assert_eq!(
+            calculate_markup_margin(80.0, 100.0),
+            MarkupMarginResult::Ok {
+                profit: 20.0,
+                markup: 25.0,
+                margin: 20.0,
+                profit_text: "20.00".into(),
+                markup_text: "25.00%".into(),
+                margin_text: "20.00%".into(),
+                label: "Profit: 20.00<br>Markup: 25.00% · Margin: 20.00%".into(),
+                live_result: "Profit: 20.00 | Markup: 25.00% | Margin: 20.00%".into(),
+                copy_text: "Profit: 20.00\nMarkup: 25.00%\nMargin: 20.00%".into(),
+            }
+        );
+        assert_eq!(
+            calculate_markup_margin(0.0, 100.0),
+            MarkupMarginResult::Err {
+                error: "Cost cannot be zero"
+            }
+        );
+        assert_eq!(
+            calculate_markup_margin(80.0, 0.0),
+            MarkupMarginResult::Err {
+                error: "Selling price cannot be zero"
+            }
+        );
+    }
+
+    #[test]
+    fn tax_add_and_extract_work() {
+        assert_eq!(
+            calculate_tax(100.0, 15.0, TaxMode::Add),
+            TaxResult::Ok {
+                net: 100.0,
+                tax: 15.0,
+                total: 115.0,
+                net_text: "100.00".into(),
+                tax_text: "15.00".into(),
+                total_text: "115.00".into(),
+                label: "Total: 115.00<br>Tax: 15.00 (Net: 100.00)".into(),
+                live_result: "Total: 115.00 | Tax: 15.00".into(),
+                copy_text: "Total: 115.00\nTax: 15.00\nNet: 100.00".into(),
+            }
+        );
+        assert_eq!(
+            calculate_tax(115.0, 15.0, TaxMode::Extract),
+            TaxResult::Ok {
+                net: 100.0,
+                tax: 15.0,
+                total: 115.0,
+                net_text: "100.00".into(),
+                tax_text: "15.00".into(),
+                total_text: "115.00".into(),
+                label: "Net: 100.00<br>Tax: 15.00 (Total: 115.00)".into(),
+                live_result: "Net: 100.00 | Tax: 15.00".into(),
+                copy_text: "Net: 100.00\nTax: 15.00\nTotal: 115.00".into(),
+            }
+        );
+        assert_eq!(
+            calculate_tax(100.0, -100.0, TaxMode::Extract),
+            TaxResult::Err {
+                error: "Tax rate cannot be -100%"
+            }
+        );
+    }
+
+    #[test]
+    fn js_round_ecmascript_edge_cases() {
+        let pos_zero_bits = 0.0_f64.to_bits();
+        let neg_zero_bits = (-0.0_f64).to_bits();
+        let two_pow_52 = 4_503_599_627_370_496.0_f64;
+
+        assert_eq!(js_round(0.499_999_999_999_999_94).to_bits(), pos_zero_bits);
+        assert_eq!(js_round(-0.499_999_999_999_999_94).to_bits(), neg_zero_bits);
+        assert_eq!(js_round(-0.5).to_bits(), neg_zero_bits);
+        assert_eq!(js_round(-0.500_000_000_000_000_1), -1.0);
+        assert_eq!(js_round(0.0).to_bits(), pos_zero_bits);
+        assert_eq!(js_round(-0.0).to_bits(), neg_zero_bits);
+        assert!(js_round(f64::NAN).is_nan());
+        assert_eq!(js_round(f64::INFINITY), f64::INFINITY);
+        assert_eq!(js_round(f64::NEG_INFINITY), f64::NEG_INFINITY);
+
+        assert_eq!(js_round(two_pow_52), two_pow_52);
+        assert_eq!(js_round(-two_pow_52), -two_pow_52);
+        assert_eq!(js_round(two_pow_52 - 0.5), two_pow_52);
+        assert_eq!(js_round(-(two_pow_52 - 0.5)), -(two_pow_52 - 1.0));
+        assert_eq!(js_round(two_pow_52 + 1.0), two_pow_52 + 1.0);
+        assert_eq!(js_round(-(two_pow_52 + 1.0)), -(two_pow_52 + 1.0));
+
+        assert_eq!(
+            calculate_percentage_portion(50.0, 0.009_999_999_999_999_998),
+            CalcResult::Ok {
+                value: 0.004_999_999_999_999_999,
+                label: "0.00".into(),
+                live_result: "0.00".into(),
+            }
+        );
+    }
+}

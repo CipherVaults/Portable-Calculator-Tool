@@ -1,0 +1,22 @@
+# Copied from CipherVaults/Percentage-Calculator-Tool tag v2.3.0
+# (commit 6edbfff8a48c3767ec04188cfd3f0465d3ee22da). Engine behaviour is
+# unchanged; the example was renamed eval_bridge -> percent_bridge.
+[package]
+name = "percent-core"
+version = "2.3.0"
+edition = "2021"
+description = "Pure percentage calculation engine (from Percentage Calculator Tool v2.3.0)."
+authors = ["Mohamed Sayed", "Ahmed Emara", "DeepSeek", "ChatGPT", "Antigravity"]
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = { version = "1", features = ["float_roundtrip"] }
+
+# Run the bridge's own tests under `cargo test`.
+[[example]]
+name = "percent_bridge"
+test = true
