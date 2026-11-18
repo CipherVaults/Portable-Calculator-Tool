@@ -3,7 +3,8 @@
 //   src-tauri/tauri.conf.json, the src-tauri / pcalc-api / pcalc-wasm
 //   Cargo.toml files, their Cargo.lock entries, web/build-manifest.json
 //   (appVersion, which the build stamps into PCalc.build and the footers),
-//   and, when dist/ exists, every built index.html footer and build-info.json.
+//   and, when dist/ exists, every built index.html footer, build-info.json
+//   and the service worker's cache name.
 // Engine versions are deliberately NOT checked here: each engine asserts
 // ENGINE_VERSION == CARGO_PKG_VERSION in its own tests and changes only with
 // engine behaviour.
@@ -52,6 +53,11 @@ for (const rel of ["dist/desktop/index.html", "dist/web/index.html", "dist/Porta
 }
 if (existsSync(join(ROOT, "dist/build-info.json"))) {
   found.push(["dist/build-info.json appVersion", JSON.parse(read("dist/build-info.json")).appVersion]);
+}
+// The service worker's CACHE_NAME "pcalc-v<app>-<buildhash>" (plan B3).
+if (existsSync(join(ROOT, "dist/web/sw.js"))) {
+  const m = /"cacheName":"pcalc-v(\d+\.\d+\.\d+)-[0-9a-f]{16}"/.exec(read("dist/web/sw.js"));
+  found.push(["dist/web/sw.js cache name", m ? m[1] : null]);
 }
 
 const want = found[0][1];

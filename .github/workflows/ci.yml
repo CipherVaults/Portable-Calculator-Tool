@@ -1,7 +1,9 @@
 name: CI (dev)
 
-# CI on dev (plan B14; M0 skeleton plus the M1 random diff and browser
-# boot proof). There is deliberately NO release job yet: it
+# CI on dev (plan B14; M0 skeleton, the M1 random diff and browser boot
+# proof, and the M2a shell checks: catalogs, contrast, CSP pinning, the
+# mini-DOM slices B and C, and the service-worker upgrade test in Edge).
+# There is deliberately NO release job yet: it
 # arrives in M10, and main's first commit has no workflows at all, so a
 # push to main can never publish anything by accident.
 on:
@@ -91,7 +93,11 @@ jobs:
         run: node scripts/check-wasm.mjs
       - name: App version is the same everywhere (including the built pages)
         run: node scripts/check-versions.mjs
-      - name: safety-eval slice D (static hygiene with mutant proofs, built output)
+      - name: Catalogs, placeholders, plurals and the formatter units (check-i18n)
+        run: node scripts/check-i18n.mjs
+      - name: Theme token sets, AA contrast and CSP pinning of the built pages (check-web)
+        run: node scripts/check-web.mjs
+      - name: safety-eval slices B, C, D (shell and stores in a mini-DOM, static hygiene, mutant proofs, built output)
         run: node scripts/safety-eval.mjs --json "$RUNNER_TEMP/safety-eval.json"
       - name: Upload the web build
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -126,6 +132,9 @@ jobs:
         with:
           name: web-dist
           path: target/web-dist
+      # Also the M2a shell: drawer, bottom sheet, theme pre-paint, tab sync,
+      # 360/390/440 px layouts with pseudo-locales, and the service-worker
+      # upgrade test (build N+1 is built here from web/ with the same engine).
       - name: Browser boot proof (headless Microsoft Edge over CDP)
         run: node scripts/browser-boot.mjs --dist target/web-dist --json "$env:RUNNER_TEMP/browser-boot.json"
       - name: Build the desktop front end (dist/desktop)
