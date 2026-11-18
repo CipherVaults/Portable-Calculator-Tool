@@ -211,6 +211,24 @@ mod tests {
         assert_eq!((r, g, b), (0x0E, 0x0F, 0x12));
     }
 
+    /// `system` resolves like the pre-paint script: a light OS gets
+    /// Daylight's background from the first frame, not Terminal's.
+    #[test]
+    fn system_theme_follows_the_os_before_the_first_frame() {
+        use crate::resolve_theme;
+        use tauri::Theme;
+        assert_eq!(resolve_theme("system", Some(Theme::Light)), "daylight");
+        assert_eq!(resolve_theme("system", Some(Theme::Dark)), "terminal");
+        assert_eq!(resolve_theme("system", None), "terminal");
+        for theme in ["terminal", "daylight", "retro"] {
+            assert_eq!(resolve_theme(theme, Some(Theme::Light)), theme);
+            assert_eq!(resolve_theme(theme, Some(Theme::Dark)), theme);
+        }
+        let tauri::window::Color(r, g, b, _) =
+            crate::theme_background(resolve_theme("system", Some(Theme::Light)));
+        assert_eq!((r, g, b), (0xF4, 0xF1, 0xEA));
+    }
+
     #[test]
     fn app_version_matches_tauri_conf() {
         let conf: serde_json::Value =
