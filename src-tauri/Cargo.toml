@@ -1,0 +1,19 @@
+[package]
+name = "portable-calculator-tool"
+# The app version (locked by scripts/check-versions.mjs). 0.1.0 during
+# development; M10 sets 1.0.0 for the release.
+version = "0.1.0"
+edition = "2021"
+description = "Offline desktop Portable Calculator Tool built with Tauri and Rust."
+authors = ["Mohamed Sayed", "Ahmed Emara", "Claude"]
+license = "UNLICENSED"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+pcalc-api = { path = "../crates/pcalc-api" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = [] }

@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/date-core",
+    "crates/percent-core",
+    "crates/calc-num",
+    "crates/calc-core",
+    "crates/units-core",
+    "crates/graph-core",
+    "crates/pcalc-api",
+    "crates/pcalc-wasm",
+    "crates/pcalc-store",
+    "src-tauri",
+]
+
+# engine.wasm for the web app (plan B3):
+#   cargo build -p pcalc-wasm --target wasm32-unknown-unknown --profile wasm --locked
+[profile.wasm]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
