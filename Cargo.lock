@@ -2159,6 +2159,7 @@ dependencies = [
 name = "pcalc-store"
 version = "0.1.0"
 dependencies = [
+ "pcalc-api",
  "serde",
  "serde_json",
 ]

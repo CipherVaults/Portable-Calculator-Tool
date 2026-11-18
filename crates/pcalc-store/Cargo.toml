@@ -8,5 +8,7 @@ license = "UNLICENSED"
 publish = false
 
 [dependencies]
+# Pure (no I/O): the store validators every load and save goes through.
+pcalc-api = { path = "../pcalc-api" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
