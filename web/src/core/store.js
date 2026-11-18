@@ -14,7 +14,9 @@
 //
 // Read-only documents refuse save() with "read_only" until a successful
 // reload ("Retry") or an explicit clear() ("Start fresh", which backs the
-// old value up first). Backups are "<name>.bak.1" (newest) to ".bak.3",
+// old value up first; a newer document is never cleared). A save or clear
+// of a document this store has not loaded yet loads it first, so nothing
+// unseen (corrupt, newer, too large) is ever overwritten. Backups are "<name>.bak.1" (newest) to ".bak.3",
 // rotated in one transaction; a backup equal to the newest is not repeated.
 // Each document write is one put in its own transaction (atomic). After a
 // write, a BroadcastChannel("pcalc") notice "<name>-changed" tells the other
@@ -45,10 +47,13 @@
       req.onerror = () => reject(req.error || new Error("IndexedDB request failed"));
     });
 
+  // A failed request's error event bubbles to the transaction before the
+  // transaction aborts, so tx.error is still null in onerror: the cause
+  // (such as a QuotaExceededError) is on the event's target, the request.
   const done = (tx) =>
     new Promise((resolve, reject) => {
       tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error || new Error("IndexedDB transaction failed"));
+      tx.onerror = (e) => reject((e && e.target && e.target.error) || tx.error || new Error("IndexedDB transaction failed"));
       tx.onabort = () => reject(tx.error || new Error("IndexedDB transaction aborted"));
     });
 
@@ -170,10 +175,12 @@
   // engine(op, req) -> envelope text; bus: PCalc.bus (or null); now(): ms.
   function createDocStore(backend, engine, bus, now) {
     const readOnly = new Map();
+    const loaded = new Set();
     const clock = now || (() => Date.now());
 
     function outcome(name, status, extra) {
       const o = Object.assign({ name, status, readOnly: !(status === "empty" || status === "ok"), doc: null, schemaVersion: null, backup: null, field: null }, extra || {});
+      loaded.add(name);
       if (o.readOnly) readOnly.set(name, status);
       else readOnly.delete(name);
       return o;
@@ -236,6 +243,7 @@
     // -> {ok: true, text} or {ok: false, code: read_only|invalid|too_large|quota|write_failed}
     async function save(name, text) {
       if (!Object.prototype.hasOwnProperty.call(DOCS, name)) return { ok: false, code: "unknown_doc" };
+      if (!loaded.has(name)) await load(name);
       if (readOnly.has(name)) return { ok: false, code: "read_only" };
       const env = await validate(name, String(text));
       if (env === null) return { ok: false, code: "invalid" };
@@ -254,9 +262,12 @@
 
     // "Start fresh" (the UI confirms first): backs the stored value up,
     // removes it and makes the document writable. Refused when the backup
-    // cannot be written, so nothing is ever removed unsaved.
+    // cannot be written, so nothing is ever removed unsaved, and for a
+    // document written by a newer app (never written, never backed up).
     async function clear(name) {
       if (!Object.prototype.hasOwnProperty.call(DOCS, name)) return { ok: false, code: "unknown_doc" };
+      if (!loaded.has(name)) await load(name);
+      if (readOnly.get(name) === "newer") return { ok: false, code: "read_only" };
       let got;
       try {
         got = await backend.get(name);
@@ -265,6 +276,14 @@
       }
       let b = null;
       if (got.found) {
+        if (typeof got.value === "string") {
+          const env = await validate(name, got.value);
+          if (env && env.ok === "true" && env.result && env.result.status === "newer") {
+            // A newer app replaced it since the last load.
+            readOnly.set(name, "newer");
+            return { ok: false, code: "read_only" };
+          }
+        }
         try {
           b = await backup(name, got.value);
           await backend.del(name);

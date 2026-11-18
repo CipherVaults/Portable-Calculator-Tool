@@ -56,5 +56,28 @@
     else node.removeAttribute(name);
   }
 
-  window.PCalc.dom = Object.freeze({ el, byId, show, setAttr, flag });
+  // Formatted values (numbers, dates, sizes) inside translated text: mark
+  // each one with value() before t() fills it in, then withValues() turns
+  // the text into text nodes and <bdi class="num"> elements, which never
+  // break across lines (styles: .num). The marks are two private-use
+  // characters that no catalog or formatter produces.
+  const OPEN = "\uE000";
+  const CLOSE = "\uE001";
+  const MARKS = /[\uE000\uE001]/g;
+  const value = (text) => OPEN + String(text).replace(MARKS, "") + CLOSE;
+  function withValues(text) {
+    const s = String(text);
+    const out = [];
+    const re = /\uE000([^\uE000\uE001]*)\uE001/g;
+    let last = 0;
+    for (let m = re.exec(s); m; m = re.exec(s)) {
+      if (m.index > last) out.push(document.createTextNode(s.slice(last, m.index).replace(MARKS, "")));
+      out.push(el("bdi", { className: "num", text: m[1] }));
+      last = re.lastIndex;
+    }
+    if (last < s.length) out.push(document.createTextNode(s.slice(last).replace(MARKS, "")));
+    return out;
+  }
+
+  window.PCalc.dom = Object.freeze({ el, byId, show, setAttr, flag, value, withValues });
 })();

@@ -67,7 +67,7 @@
 
   "banner.memory": "Settings and history will not be saved in this browser mode.",
   "banner.readOnly": "{doc} could not be read safely. Nothing will be overwritten.",
-  "banner.newer": "{doc} was saved by a newer version of the app. It is kept read-only.",
+  "banner.newer": "{doc} was saved by a newer version of the app. It is kept read-only and unchanged here; update this app to use it.",
   "banner.retry": "Retry",
   "banner.reset": "Start fresh",
   "banner.resetConfirm": "Confirm: start fresh (a backup is kept)",

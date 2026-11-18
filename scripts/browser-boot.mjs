@@ -15,10 +15,11 @@
 // securitypolicyviolation events, zero console errors and uncaught
 // exceptions, data-engine="wasm" with data-engine-sha256 equal to the
 // build's engine hash (the loader reports the hash it verified before
-// compiling), no horizontal scroll at a 390 px phone viewport. A positive
-// control then injects an inline script into each booted page: it must be
-// blocked and must be seen by both detectors (violation event and console
-// error), so "zero" above means something.
+// compiling), no horizontal scroll at a 390 px phone viewport. Positive
+// controls then inject an inline script into each booted page (it must be
+// blocked and seen by both detectors: violation event and console error)
+// and call an HTML sink (Trusted Types must refuse it), so "zero" above
+// means something.
 //
 // Failure paths, each with the read-only rescue view and zero violations:
 //   tampered   served, one engine byte flipped: data-boot="integrity" (the
@@ -38,7 +39,11 @@
 //              inside the viewport, Tab stays in it, Esc closes it and
 //              gives focus back; a drawer link navigates; Alt+5 and Ctrl+H
 //              work; the pane is a bottom sheet (full width, at the bottom,
-//              within 75% of the height, 44 px close button)
+//              within 75% of the height, 44 px close button); while a modal
+//              is open the footer is inert and the page does not scroll;
+//              opened by a click that does not focus (Safari), closing
+//              still returns focus to the toggle; a Settings select keeps
+//              focus through the re-render its change causes (ArrowDown)
 //   theme      Settings > Appearance switches data-theme and the --bg
 //              colour at once; after a reload the pre-paint script has set
 //              the theme before <body> exists and the first frame already
@@ -53,15 +58,23 @@
 //              viewport, every visible control at least 44 px tall; in
 //              ar-XB the drawer opens from the right. At 900 px the pane is
 //              an overlay from the inline end; at 1280 px the drawer is
-//              pinned and the pane docked. With --shots <dir> each case is
-//              saved as a PNG screenshot there
+//              pinned and the pane docked (all three themes each); crossing
+//              900 -> 1280 px keeps the pane open and focus on its tab.
+//              No formatted value (.num) wraps and no word of a title, tab
+//              or nav label breaks mid-word; a clamped title is never cut.
+//              With --shots <dir> each case is saved as a PNG screenshot
 //   upgrade    build N+1 (a copy of web/ with one changed byte, built into
 //              target/browser-boot/) on the same origin as build N: boot N
 //              and let its service worker take over, switch the server to
 //              N+1 and reload online (boots N+1 with only N+1 assets, the
 //              worker updates and deletes N's cache), then stop the server
 //              and reload offline (boots N+1 from the cache, the same
-//              assets): no mixed assets at any step
+//              assets): no mixed assets at any step. Before that, a stale
+//              index.html (build N's, as a CDN edge may still serve) next to
+//              N+1's sw.js must fail the install and leave N's cache and
+//              boot intact. A theme and route saved in N survive into N+1
+//              byte for byte, with no backup written, and a second N tab
+//              left open across the activation stays usable
 //
 // Timing: each good build is booted --runs times (default 5) in fresh tabs;
 // data-boot-ms (navigation start to verdict, measured in the page) is
@@ -317,7 +330,7 @@ async function openPage(edge, url, { keepOpen = false, preScripts = [] } = {}) {
     },
     // A key press as the browser delivers it (keydown + keyup).
     async key(key, { alt = false, ctrl = false, shift = false } = {}) {
-      const KEYS = { Tab: [9, "Tab"], Escape: [27, "Escape"], ArrowRight: [39, "ArrowRight"], ArrowLeft: [37, "ArrowLeft"] };
+      const KEYS = { Tab: [9, "Tab"], Escape: [27, "Escape"], ArrowRight: [39, "ArrowRight"], ArrowLeft: [37, "ArrowLeft"], ArrowDown: [40, "ArrowDown"], ArrowUp: [38, "ArrowUp"] };
       const [vk, code] = KEYS[key] || (/^\d$/.test(key) ? [48 + Number(key), "Digit" + key] : [key.toUpperCase().charCodeAt(0), "Key" + key.toUpperCase()]);
       const modifiers = (alt ? 1 : 0) | (ctrl ? 2 : 0) | (shift ? 8 : 0);
       const base = { key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers };
@@ -395,16 +408,48 @@ function expectGoodBoot(name, state, logs, engineSha) {
   expect(`${name}.phone-no-horizontal-scroll`, state.scrollWidth <= state.innerWidth, `scrollWidth ${state.scrollWidth}, viewport ${state.innerWidth}`);
 }
 
-// The positive control: an injected inline script must be blocked and seen.
+// The positive controls, so that "zero violations" means something:
+//   - an injected inline script must not run and must be seen by both
+//     detectors (violation event and console error). Under Trusted Types
+//     writing the script's text is itself refused, so the text goes in as a
+//     text node, and Trusted Types (require-trusted-types-for) blocks it;
+//   - a dynamic import of a data: URL (not a Trusted Types sink) must be
+//     refused by script-src itself, and be seen the same two ways;
+//   - an HTML sink (DOMParser) must throw and be reported as a Trusted
+//     Types violation.
+const CSP_LOG = /Content Security Policy|Trusted ?(Types?|Script|HTML)/i;
 async function expectControl(name, edge, url) {
   const { tab } = await openPage(edge, url, { keepOpen: true });
-  const ran = await tab.evaluate(`(() => { const s = document.createElement("script"); s.textContent = "window.__pcalcInjected = 1"; document.body.append(s); return window.__pcalcInjected === 1; })()`);
-  await new Promise((r) => setTimeout(r, 300));
-  const state = JSON.parse(await tab.evaluate(STATE));
-  const seen = (state.violations || []).filter((v) => v.directive === "script-src-elem" || v.directive === "script-src");
-  const logged = tab.logs.logErrors.filter((e) => /Content Security Policy/i.test(e.text)).length + tab.logs.consoleErrors.filter((t) => /Content Security Policy/i.test(t)).length;
+  const violations = async () => JSON.parse(await tab.evaluate(STATE)).violations || [];
+  const logged = () => tab.logs.logErrors.filter((e) => CSP_LOG.test(e.text)).length + tab.logs.consoleErrors.filter((t) => CSP_LOG.test(t)).length;
+  const settle = () => new Promise((r) => setTimeout(r, 300));
+
+  const ran = await tab.evaluate(`(() => {
+    const s = document.createElement("script");
+    const code = "window.__pcalcInjected = 1";
+    try { s.textContent = code; } catch (_) { s.append(document.createTextNode(code)); }
+    document.body.append(s);
+    return window.__pcalcInjected === 1;
+  })()`);
+  await settle();
+  const v1 = await violations();
+  const l1 = logged();
+  const seen1 = v1.filter((v) => ["script-src-elem", "script-src", "require-trusted-types-for"].includes(v.directive));
+  expect(`${name}.control-inline-script-blocked-and-detected`, ran === false && seen1.length >= 1 && l1 >= 1, `ran=${ran} violations=${JSON.stringify(seen1.map((v) => v.directive))} logged=${l1}`);
+
+  const imported = await tab.evaluate(`import("data:text/javascript,window.__pcalcImported=1").then(() => window.__pcalcImported === 1, () => false)`);
+  await settle();
+  const v2 = (await violations()).slice(v1.length);
+  const l2 = logged() - l1;
+  const seen2 = v2.filter((v) => v.directive === "script-src-elem" || v.directive === "script-src");
+  expect(`${name}.control-script-src-blocks-a-data-import`, imported === false && seen2.length >= 1 && l2 >= 1, `ran=${imported} violations=${JSON.stringify(v2.map((v) => v.directive))} logged=${l2}`);
+
+  const sink = await tab.evaluate(`(() => { try { new DOMParser().parseFromString("<b>x</b>", "text/html"); return "allowed"; } catch (e) { return e.name; } })()`);
+  await settle();
+  const v3 = (await violations()).slice(v1.length + v2.length);
+  const tt = v3.filter((v) => v.directive === "require-trusted-types-for");
+  expect(`${name}.control-html-sink-refused-by-trusted-types`, sink === "TypeError" && tt.length >= 1, `DOMParser -> ${sink}, trusted-types violations ${tt.length}`);
   await tab.close();
-  expect(`${name}.control-inline-script-blocked-and-detected`, ran === false && seen.length >= 1 && logged >= 1, `ran=${ran} violations=${seen.length} logged=${logged}`);
 }
 
 function expectRescue(name, state, logs, wantBoot, wantError, allow) {
@@ -455,13 +500,37 @@ const LAYOUT = `(() => {
   const vw = document.documentElement.clientWidth;
   const name = (n) => n.tagName.toLowerCase() + (n.id ? "#" + n.id : "") + (n.className && typeof n.className === "string" ? "." + n.className.trim().split(/\\s+/).join(".") : "");
   const shown = (n) => { const r = n.getBoundingClientRect(); return r.width > 0 && r.height > 0 && getComputedStyle(n).visibility !== "hidden"; };
-  const out = { vw, vh: innerHeight, scrollWidth: document.documentElement.scrollWidth, outside: [], small: [], clipped: [], dir: document.documentElement.dir, theme: document.documentElement.dataset.theme };
+  const out = { vw, vh: innerHeight, scrollWidth: document.documentElement.scrollWidth, outside: [], small: [], clipped: [], broken: [], dir: document.documentElement.dir, theme: document.documentElement.dataset.theme };
   for (const n of document.querySelectorAll("body *")) {
     if (!shown(n)) continue;
     const r = n.getBoundingClientRect();
     if (r.left < -0.5 || r.right > vw + 0.5) out.outside.push(name(n) + " " + Math.round(r.left) + ".." + Math.round(r.right));
     const cs = getComputedStyle(n);
-    if ((cs.overflowX === "hidden" || cs.overflowX === "clip") && n.scrollWidth > n.clientWidth + 1 && !n.classList.contains("topbar-title")) out.clipped.push(name(n));
+    if ((cs.overflowX === "hidden" || cs.overflowX === "clip") && n.scrollWidth > n.clientWidth + 1) out.clipped.push(name(n));
+    // Clamped lines (the top-bar title takes at most two) must all fit.
+    if ((cs.overflowY === "hidden" || cs.overflowY === "clip") && n.scrollHeight > n.clientHeight + 1) out.clipped.push(name(n) + " (cut vertically)");
+  }
+  // The lines a text range lies on (distinct line tops).
+  const lines = (range) => new Set([...range.getClientRects()].filter((q) => q.width > 0.5).map((q) => Math.round(q.top))).size;
+  // A formatted value never breaks across lines.
+  for (const n of document.querySelectorAll(".num")) {
+    if (!shown(n)) continue;
+    const range = document.createRange();
+    range.selectNodeContents(n);
+    if (lines(range) > 1) out.broken.push(name(n) + " " + JSON.stringify(n.textContent) + " wraps");
+  }
+  // No word of a title, tab or nav label breaks in the middle.
+  for (const n of document.querySelectorAll(".topbar-title, .pane-tab, .nav-link, .drawer-title, .pane-title")) {
+    if (!shown(n)) continue;
+    const walker = document.createTreeWalker(n, NodeFilter.SHOW_TEXT);
+    for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+      for (const m of t.data.matchAll(/\\S+/g)) {
+        const range = document.createRange();
+        range.setStart(t, m.index);
+        range.setEnd(t, m.index + m[0].length);
+        if (lines(range) > 1) out.broken.push(name(n) + " " + JSON.stringify(m[0]) + " breaks mid-word");
+      }
+    }
   }
   for (const n of document.querySelectorAll("#app button, #app a[href], #app select, #app .choice")) {
     if (!shown(n)) continue;
@@ -481,6 +550,19 @@ const IDB_GET = (key) => `new Promise((done) => {
     const g = db.transaction("docs").objectStore("docs").get(${JSON.stringify(key)});
     g.onsuccess = () => { db.close(); done(g.result === undefined ? null : g.result); };
     g.onerror = () => { db.close(); done(null); };
+  };
+})`;
+
+// Every key in the IndexedDB "docs" store (read-only; [] when absent).
+const IDB_KEYS = `new Promise((done) => {
+  const r = indexedDB.open("pcalc");
+  r.onerror = () => done([]);
+  r.onsuccess = () => {
+    const db = r.result;
+    if (!db.objectStoreNames.contains("docs")) { db.close(); return done([]); }
+    const g = db.transaction("docs").objectStore("docs").getAllKeys();
+    g.onsuccess = () => { db.close(); done(g.result.map(String)); };
+    g.onerror = () => { db.close(); done([]); };
   };
 })`;
 
@@ -529,6 +611,9 @@ async function shellChecks(edgePath, url) {
     await tab.tap("#drawerToggle");
     const open = await json(tab, BOX("drawer"));
     expect("shell.drawer-opens-as-modal", !open.hidden && open.role === "dialog" && open.focusInside && open.viewInert && open.left >= 0 && open.right <= open.vw && open.width <= open.vw * 0.86 + 1, JSON.stringify(open));
+    // Behind the modal: the footer is inert too and the page does not scroll.
+    const behind = await json(tab, `(() => { const f = document.getElementById("appFooter"); return { footerInert: f.inert, footerHidden: f.getAttribute("aria-hidden"), overflow: getComputedStyle(document.documentElement).overflowY }; })()`);
+    expect("shell.modal-locks-footer-and-scroll", behind.footerInert === true && behind.footerHidden === "true" && behind.overflow === "hidden", JSON.stringify(behind));
     let escaped = 0;
     for (let i = 0; i < 25; i++) {
       await tab.key("Tab", { shift: i >= 12 });
@@ -563,6 +648,44 @@ async function shellChecks(edgePath, url) {
     await tab.key("Escape");
     const paneClosed = await json(tab, BOX("pane"));
     expect("shell.pane-escape-closes", paneClosed.hidden && !paneClosed.focusInside && !paneClosed.viewInert, JSON.stringify(paneClosed));
+
+    // Safari does not focus a button on tap or click: open with a click
+    // that leaves focus on <body>; closing must still return to the toggle.
+    const openers = [];
+    for (const [toggle, close] of [["drawerToggle", "Escape"], ["drawerToggle", "drawerClose"], ["paneToggle", "Escape"], ["paneToggle", "paneClose"]]) {
+      await tab.evaluate(`(() => { if (document.activeElement) document.activeElement.blur(); document.getElementById(${JSON.stringify(toggle)}).click(); return true; })()`);
+      await new Promise((r) => setTimeout(r, 60));
+      if (close === "Escape") await tab.key("Escape");
+      else await tab.evaluate(`document.getElementById(${JSON.stringify(close)}).click(); true`);
+      await new Promise((r) => setTimeout(r, 60));
+      const at = await tab.evaluate(`(document.activeElement && document.activeElement.id) || (document.activeElement ? document.activeElement.tagName : null)`);
+      openers.push({ toggle, close, at });
+    }
+    expect("shell.focus-returns-without-a-focusing-tap", openers.every((o) => o.at === o.toggle), openers.map((o) => `${o.toggle}/${o.close} -> ${o.at}`).join(", "));
+
+    // A Settings select that re-labels the app keeps focus: ArrowDown on a
+    // closed select changes it on every press (Windows), so a keyboard user
+    // must be able to press twice.
+    await goRoute(tab, "settings");
+    const scrollBefore = await tab.evaluate(`(() => { document.getElementById("digitsSelect").focus(); return scrollY; })()`);
+    await tab.key("ArrowDown");
+    await new Promise((r) => setTimeout(r, 150));
+    await tab.key("ArrowDown");
+    await new Promise((r) => setTimeout(r, 150));
+    const digits = await json(tab, `({ value: document.getElementById("digitsSelect").value, active: document.activeElement && document.activeElement.id, scrollY })`);
+    await tab.evaluate(`document.getElementById("pseudoSelect").focus(); true`);
+    await tab.key("ArrowDown");
+    await new Promise((r) => setTimeout(r, 150));
+    const pseudo = await json(tab, `({ value: document.getElementById("pseudoSelect").value, active: document.activeElement && document.activeElement.id, lang: document.documentElement.lang })`);
+    expect(
+      "shell.settings-select-keeps-focus",
+      digits.value === "arabic-indic" && digits.active === "digitsSelect" && pseudo.value !== "off" && pseudo.active === "pseudoSelect",
+      JSON.stringify({ scrollBefore, digits, pseudo })
+    );
+    await pickPseudo(tab, "off");
+    await tab.evaluate(`(() => { const s = document.getElementById("digitsSelect"); s.value = "western"; s.dispatchEvent(new Event("change")); return true; })()`);
+    await new Promise((r) => setTimeout(r, 120));
+    await goRoute(tab, "standard");
 
     // Theme: instant switch, saved, pre-painted on the next load.
     await pickTheme(tab, "retro");
@@ -599,8 +722,8 @@ async function layoutChecks(edgePath, url, shots) {
     const record = async (id, extra = () => null) => {
       const l = await json(tab, LAYOUT);
       const more = await extra(l);
-      const ok = l.scrollWidth <= l.vw && l.outside.length === 0 && l.small.length === 0 && l.clipped.length === 0 && !more;
-      expect(`layout.${id}`, ok, JSON.stringify({ scrollWidth: l.scrollWidth, vw: l.vw, outside: l.outside.slice(0, 4), small: l.small.slice(0, 4), clipped: l.clipped.slice(0, 4), more }));
+      const ok = l.scrollWidth <= l.vw && l.outside.length === 0 && l.small.length === 0 && l.clipped.length === 0 && l.broken.length === 0 && !more;
+      expect(`layout.${id}`, ok, JSON.stringify({ scrollWidth: l.scrollWidth, vw: l.vw, outside: l.outside.slice(0, 4), small: l.small.slice(0, 4), clipped: l.clipped.slice(0, 4), broken: l.broken.slice(0, 4), more }));
       if (shots) {
         const path = join(shots, `${id.replace(/[^a-z0-9-]+/gi, "_")}.png`);
         await tab.screenshot(path);
@@ -611,6 +734,13 @@ async function layoutChecks(edgePath, url, shots) {
       await tab.evaluate(`document.getElementById("drawerToggle").focus(); true`);
       await tab.tap("#drawerToggle");
     };
+    // The selected pane tab is bold and wider: select the longest label
+    // (Countdowns) once, so every pane case below shows the worst case.
+    await tab.viewport(360, 800);
+    await goRoute(tab, "date");
+    await tab.key("h", { ctrl: true });
+    await tab.tap("#paneTab-countdowns");
+    await tab.key("Escape");
     for (const width of [360, 390, 440]) {
       await tab.viewport(width, 800);
       for (const route of ["standard", "settings", "about", "converter/temperature"]) {
@@ -637,8 +767,17 @@ async function layoutChecks(edgePath, url, shots) {
       await record(`${width}.en-XA-settings`);
       await goRoute(tab, "about");
       await record(`${width}.en-XA-about`);
+      // The longest titles (two lines in the top bar, never cut).
+      for (const route of ["converter/mass", "mini"]) {
+        await goRoute(tab, route);
+        await record(`${width}.en-XA-${route.replace("/", "-")}`);
+      }
       await openDrawer();
       await record(`${width}.en-XA-drawer`);
+      await tab.key("Escape");
+      await goRoute(tab, "date");
+      await tab.key("h", { ctrl: true });
+      await record(`${width}.en-XA-pane-open`);
       await tab.key("Escape");
       await pickPseudo(tab, "ar-XB");
       await record(`${width}.ar-XB-settings`, (l) => (l.dir === "rtl" ? null : `dir ${l.dir}`));
@@ -663,16 +802,33 @@ async function layoutChecks(edgePath, url, shots) {
       return p.role === "dialog" && Math.abs(p.right - p.vw) <= 0.5 && p.top <= 0.5 && Math.abs(p.bottom - p.vh) <= 1 && p.width <= 320.5 ? null : JSON.stringify(p);
     });
     await tab.key("Escape");
-    await tab.viewport(1280, 800, false);
-    await goRoute(tab, "settings");
+    // A tablet turned (or a window widened) while the overlay pane has
+    // focus: the pane stays open, now docked, and focus moves to its
+    // selected tab instead of falling to <body>.
     await tab.key("h", { ctrl: true });
-    await record("1280.docked", async () => {
+    await tab.viewport(1280, 800, false);
+    const crossed = await json(tab, `(() => { const p = document.getElementById("pane"); const a = document.activeElement;
+      return { hidden: p.hidden, role: p.getAttribute("role"), active: a ? a.id || a.tagName : null, selected: a ? a.getAttribute("aria-selected") : null, modal: document.documentElement.hasAttribute("data-modal") }; })()`);
+    expect("layout.900-to-1280-keeps-pane-and-focus", !crossed.hidden && crossed.role === null && /^paneTab-/.test(crossed.active || "") && crossed.selected === "true" && !crossed.modal, JSON.stringify(crossed));
+    await goRoute(tab, "settings");
+    const docked = async () => {
       const d = await json(tab, BOX("drawer"));
       const p = await json(tab, BOX("pane"));
       const toggle = await tab.evaluate(`document.getElementById("drawerToggle").hidden`);
       return !d.hidden && d.role === null && !p.hidden && p.role === null && toggle && !p.viewInert ? null : JSON.stringify({ d, p, toggle });
-    });
-    await tab.key("h", { ctrl: true });
+    };
+    await record("1280.docked", docked);
+    for (const theme of ["daylight", "retro", "terminal"]) {
+      await pickTheme(tab, theme);
+      await record(`1280.docked-${theme}`, docked);
+    }
+    await tab.viewport(900, 800, false);
+    for (const theme of ["daylight", "retro", "terminal"]) {
+      await pickTheme(tab, theme);
+      await tab.key("h", { ctrl: true });
+      await record(`900.pane-overlay-${theme}`);
+      await tab.key("Escape");
+    }
     expect("layout.no-console-errors", errorCount(tab.logs) === 0, describeLogs(tab.logs));
     await tab.close();
   } finally {
@@ -726,7 +882,43 @@ async function upgradeChecks(edgePath, dist, info) {
     const keysN = await json(tab, CACHES_SETTLED(n.cacheName));
     expect("upgrade.n-boots-and-caches", state.boot === "ok" && keysN.length === 1 && keysN[0] === n.cacheName, `boot ${state.boot}, caches ${keysN.join(",")}`);
 
+    // The user's data in build N: a non-default theme and route.
+    await pickTheme(tab, "retro");
+    await goRoute(tab, "date");
+    await waitFor(tab, `${IDB_GET("state")}.then((v) => v && v.includes('"route":"date"') ? v : null)`);
+    const settingsN = await json(tab, IDB_GET("settings"));
+    // A second tab of build N stays open across the whole upgrade.
+    const oldTab = (await openPage(edge, server.url, { keepOpen: true })).tab;
+
+    // A CDN edge still serves build N's index.html next to N+1's sw.js: the
+    // N+1 install must fail on the hash check, and N's cache must survive
+    // and keep booting N (its hashed files are gone from the server).
     server.setDir(join(next.dir, "web"));
+    const staleIndex = readFileSync(join(dist, "web", "index.html"));
+    server.setTransform((rel) => (rel === "index.html" ? staleIndex : undefined));
+    await tab.evaluate(`navigator.serviceWorker.getRegistration().then((r) => r && r.update()).then(() => true, () => true)`);
+    const failed = await json(tab, `(async () => {
+      const r = await navigator.serviceWorker.getRegistration();
+      const end = Date.now() + 15000;
+      while (r && r.installing && Date.now() < end) await new Promise((d) => setTimeout(d, 100));
+      return { installing: Boolean(r && r.installing), waiting: Boolean(r && r.waiting), caches: (await caches.keys()).filter((k) => k.startsWith("pcalc-")) };
+    })()`);
+    expect(
+      "upgrade.stale-index-fails-the-install",
+      !failed.installing && !failed.waiting && failed.caches.length === 1 && failed.caches[0] === n.cacheName,
+      JSON.stringify(failed)
+    );
+    // (With a worker that cached the stale index, its hashed files are
+    // nowhere and the page never reaches a verdict: report, do not crash.)
+    const stale = await tab.navigate(server.url).catch((err) => ({ boot: `none (${err.message})` }));
+    const loadedStale = stale.boot === "ok" ? await json(tab, LOADED) : {};
+    expect(
+      "upgrade.stale-index-still-boots-n-from-its-cache",
+      stale.boot === "ok" && loadedStale.cssFile === css(n) && loadedStale.assets === "consistent",
+      `boot ${stale.boot}, css ${loadedStale.cssFile}, assets ${loadedStale.assets}`
+    );
+    server.setTransform(null);
+
     const online = await tab.navigate(server.url);
     const loadedOnline = await json(tab, LOADED);
     const mixedOnline = loadedOnline.files.filter((f) => !assetSet(n1).has(f));
@@ -735,9 +927,17 @@ async function upgradeChecks(edgePath, dist, info) {
       online.boot === "ok" && loadedOnline.cssFile === css(n1) && loadedOnline.assets === "consistent" && mixedOnline.length === 0,
       `boot ${online.boot}, css ${loadedOnline.cssFile}, foreign files ${mixedOnline.join(",") || "none"}`
     );
+    const themeOnline = await tab.evaluate(`document.documentElement.dataset.theme`);
+    expect("upgrade.n1-online-keeps-theme-and-route", online.route === "date" && themeOnline === "retro", `route ${online.route}, theme ${themeOnline}`);
     await tab.evaluate(`navigator.serviceWorker.getRegistration().then((r) => r && r.update()).then(() => true, () => true)`);
     const keysN1 = await json(tab, CACHES_SETTLED(n1.cacheName));
     expect("upgrade.worker-replaces-the-old-cache", keysN1.length === 1 && keysN1[0] === n1.cacheName, `caches ${keysN1.join(",")}`);
+
+    // The build-N tab, now controlled by N+1's worker, still works.
+    await goRoute(oldTab, "about");
+    const oldState = await json(oldTab, `({ route: document.documentElement.dataset.route, title: document.getElementById("routeTitle").textContent, boot: document.documentElement.dataset.boot })`);
+    expect("upgrade.open-n-tab-stays-usable", oldState.boot === "ok" && oldState.route === "about" && oldState.title === "About" && errorCount(oldTab.logs) === 0, `${JSON.stringify(oldState)} ${describeLogs(oldTab.logs)}`);
+    await oldTab.close();
 
     await server.close();
     open = false;
@@ -748,6 +948,14 @@ async function upgradeChecks(edgePath, dist, info) {
       "upgrade.n1-offline-boots-from-its-cache",
       offline.boot === "ok" && offline.route === "about" && loadedOffline.cssFile === css(n1) && loadedOffline.assets === "consistent" && mixedOffline.length === 0,
       `boot ${offline.boot}, route ${offline.route}, css ${loadedOffline.cssFile}, foreign files ${mixedOffline.join(",") || "none"}`
+    );
+    // The data written in N is untouched by the upgrade: same settings
+    // bytes, the theme still applied, and no backup was ever needed.
+    const after = await json(tab, `(async () => ({ theme: document.documentElement.dataset.theme, settings: await ${IDB_GET("settings")}, keys: await ${IDB_KEYS} }))()`);
+    expect(
+      "upgrade.user-data-survives",
+      after.settings === settingsN && after.theme === "retro" && after.keys.every((k) => !k.includes(".bak")),
+      JSON.stringify({ theme: after.theme, settingsSame: after.settings === settingsN, keys: after.keys })
     );
     // Offline, the browser logs the failed network attempts the worker
     // falls back from; nothing else may be logged.

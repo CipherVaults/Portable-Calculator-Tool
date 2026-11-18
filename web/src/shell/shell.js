@@ -9,12 +9,17 @@
 //   760-1100 px  drawer: modal; pane: modal overlay from the inline end
 //   >= 1100 px   drawer pinned as a column; pane docked as a column
 // A modal drawer or pane traps Tab inside itself, closes on Esc or the
-// scrim, makes the rest of the page inert and returns focus to the button
-// that opened it.
+// scrim, makes the rest of the page (footer included) inert, stops the page
+// behind it scrolling (<html data-modal>) and returns focus to the button
+// that opened it (its toggle when the tap did not focus it, as in Safari).
+// Crossing 1100 px keeps the pane's open state and moves focus that was in
+// a closed or hidden part to its counterpart in the new layout.
 //
 // Keys: Alt+1 … Alt+6 open Standard, Scientific, Graphing, Programmer,
 // Date and Percentage; Ctrl+H shows or hides the history pane; Esc closes
-// the open drawer or pane.
+// the open drawer or pane. The shortcuts never fire while an input method
+// is composing or in a text field, a select or editable content (macOS
+// types characters with Option+digit, and Ctrl+H deletes there).
 (function () {
   "use strict";
   const ns = window.PCalc;
@@ -121,7 +126,8 @@
     // Everything but the open modal is inert (where supported) and hidden
     // from assistive technology; the focus trap covers older browsers.
     function setInert(except) {
-      for (const n of [nodes.topbar, nodes.drawer, nodes.view, nodes.pane]) {
+      for (const n of [nodes.topbar, nodes.drawer, nodes.view, nodes.pane, byId("appFooter")]) {
+        if (!n) continue;
         const on = except !== null && n !== except;
         flag(n, "inert", on);
         if (on) n.setAttribute("aria-hidden", "true");
@@ -133,14 +139,23 @@
       return Array.from(container.querySelectorAll(FOCUSABLE)).filter((n) => !n.closest("[hidden]"));
     }
 
-    function openModal(name, container) {
-      const opener = document.activeElement;
-      modal = { name, opener, container };
+    // The element focus returns to: the focused control, or the modal's
+    // toggle when nothing in the shell has focus (Safari does not focus a
+    // button on tap or click, so activeElement is <body>).
+    function openerFor(toggle) {
+      const active = document.activeElement;
+      if (!active || active === document.body || active === document.documentElement || !nodes.shell.contains(active)) return toggle;
+      return active;
+    }
+
+    function openModal(name, container, toggle) {
+      modal = { name, opener: openerFor(toggle), container };
       flag(nodes.scrim, "hidden", false);
       container.setAttribute("role", "dialog");
       container.setAttribute("aria-modal", "true");
       setInert(container);
       nodes.shell.setAttribute("data-modal", name);
+      document.documentElement.setAttribute("data-modal", name);
       const first = focusables(container)[0];
       if (first) first.focus();
     }
@@ -154,14 +169,17 @@
       container.removeAttribute("aria-modal");
       setInert(null);
       nodes.shell.removeAttribute("data-modal");
+      document.documentElement.removeAttribute("data-modal");
       if (name === "drawer") {
         flag(nodes.drawer, "hidden", drawerIsModal());
         nodes.drawerToggle.setAttribute("aria-expanded", "false");
-      } else {
+      } else if (!opts || !opts.layoutChange) {
         setPane(false, { fromModal: true });
       }
       if (!opts || opts.restoreFocus !== false) {
-        if (opener && typeof opener.focus === "function" && document.contains(opener)) opener.focus();
+        // A rebuilt shell replaced the opener: use the new toggle.
+        const back = opener && document.contains(opener) ? opener : name === "drawer" ? nodes.drawerToggle : nodes.paneToggle;
+        if (back && typeof back.focus === "function") back.focus();
       }
     }
 
@@ -170,7 +188,7 @@
       if (modal) closeModal({ restoreFocus: false });
       flag(nodes.drawer, "hidden", false);
       nodes.drawerToggle.setAttribute("aria-expanded", "true");
-      openModal("drawer", nodes.drawer);
+      openModal("drawer", nodes.drawer, nodes.drawerToggle);
     }
 
     // Focus trap: Tab and Shift+Tab cycle inside the open modal.
@@ -241,7 +259,7 @@
       }
       if (open && paneIsModal() && !o.restoring) {
         if (modal) closeModal({ restoreFocus: false });
-        openModal("pane", nodes.pane);
+        openModal("pane", nodes.pane, nodes.paneToggle);
         const tab = nodes.tabs.get(ctx.state.pane.tab);
         if (tab) tab.focus();
       } else if (open && o.focus) {
@@ -254,9 +272,15 @@
       setPane(nodes.pane.hasAttribute("hidden"), { focus: true });
     }
 
-    // Re-applies the layout semantics when the width crosses 1100 px.
+    // Re-applies the layout semantics when the width crosses 1100 px (a
+    // tablet turned, a window resized). The pane's open state is kept; an
+    // open pane only waits to be asked for again on a narrow screen. Focus
+    // that was in the drawer or pane moves to its counterpart in the new
+    // layout instead of falling to <body>.
     function onWidth() {
-      if (modal) closeModal({ restoreFocus: false });
+      const active = document.activeElement;
+      const wasIn = nodes.drawer.contains(active) ? "drawer" : nodes.pane.contains(active) ? "pane" : null;
+      if (modal) closeModal({ restoreFocus: false, layoutChange: true });
       flag(nodes.drawer, "hidden", drawerIsModal());
       flag(nodes.drawerToggle, "hidden", !drawerIsModal());
       nodes.shell.setAttribute("data-layout", wide.matches ? "wide" : "narrow");
@@ -265,6 +289,17 @@
       flag(nodes.pane, "hidden", !open);
       nodes.paneToggle.setAttribute("aria-expanded", open ? "true" : "false");
       nodes.shell.setAttribute("data-pane", open ? "open" : "closed");
+      if (wasIn === "pane") {
+        const tab = nodes.tabs.get(ctx.state.pane.tab);
+        if (open && tab) tab.focus();
+        else nodes.paneToggle.focus();
+      } else if (wasIn === "drawer") {
+        if (drawerIsModal()) nodes.drawerToggle.focus();
+        else {
+          const link = nodes.links.get(route) || nodes.links.values().next().value;
+          if (link) link.focus();
+        }
+      }
     }
 
     // ---- routes ------------------------------------------------------------
@@ -308,10 +343,19 @@
         const docName = tt("store.doc." + name);
         const text = o.status === "newer" ? tt("banner.newer", { doc: docName }) : tt("banner.readOnly", { doc: docName });
         const retry = el("button", { className: "button", text: tt("banner.retry"), attrs: { type: "button", "data-doc": name } });
+        retry.addEventListener("click", () => ctx.retry(name));
+        // A document written by a newer app is never replaced or backed up
+        // here (B10): Retry only, and the banner says to update.
+        if (o.status === "newer") {
+          items.push(el("div", { className: "banner", attrs: { role: "status", "data-doc": name, "data-state": o.status } }, [
+            el("p", { className: "banner-text", text }),
+            el("div", { className: "button-row" }, [retry])
+          ]));
+          continue;
+        }
         const armed = resetArmed === name;
         const reset = el("button", { className: armed ? "button danger" : "button", text: tt(armed ? "banner.resetConfirm" : "banner.reset"),
           attrs: { type: "button", "data-doc": name, "data-state": armed ? "armed" : "idle" } });
-        retry.addEventListener("click", () => ctx.retry(name));
         reset.addEventListener("click", () => {
           if (resetArmed === name) {
             resetArmed = null;
@@ -338,6 +382,16 @@
 
     // ---- keyboard ------------------------------------------------------------
 
+    // A field where keys type text (or pick an option): shortcuts stay out.
+    const TEXT_INPUTS = new Set(["", "text", "search", "email", "url", "tel", "password", "number", "date", "time", "datetime-local", "month", "week"]);
+    function editable(node) {
+      if (!node || node.nodeType !== 1) return false;
+      if (node.isContentEditable) return true;
+      const tag = node.localName;
+      if (tag === "textarea" || tag === "select") return true;
+      return tag === "input" && TEXT_INPUTS.has(String(node.getAttribute("type") || "").toLowerCase());
+    }
+
     function onKey(e) {
       trap(e);
       if (e.defaultPrevented) return;
@@ -346,6 +400,7 @@
         closeModal();
         return;
       }
+      if (e.isComposing || editable(e.target)) return;
       if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
         const m = /^(?:Digit|Numpad)([1-6])$/.exec(e.code || "");
         if (m) {
@@ -363,20 +418,34 @@
 
     // ---- lifecycle -----------------------------------------------------------
 
+    // Rebuilding or re-rendering replaces the focused control (a Settings
+    // select whose change re-labels the app): focus goes back to the control
+    // with the same id, without scrolling (WCAG 2.4.3, 3.2.2).
+    function keepingFocus(fn) {
+      const active = document.activeElement;
+      const id = active && active !== document.body && typeof active.getAttribute === "function" ? active.getAttribute("id") : null;
+      fn();
+      if (!id || document.activeElement === active) return;
+      const again = byId(id);
+      if (again && again !== document.activeElement) again.focus({ preventScroll: true });
+    }
+
     build();
     const controller = {
       rebuild() {
-        const wasModal = modal ? modal.name : null;
-        if (modal) closeModal({ restoreFocus: false });
-        build();
-        onWidth();
-        selectTab(ctx.state.pane.tab, { save: false });
-        renderRoute(route);
-        renderBanners();
-        if (wasModal === "pane") setPane(true);
+        keepingFocus(() => {
+          const wasModal = modal ? modal.name : null;
+          if (modal) closeModal({ restoreFocus: false, layoutChange: true });
+          build();
+          onWidth();
+          selectTab(ctx.state.pane.tab, { save: false });
+          renderRoute(route);
+          renderBanners();
+          if (wasModal === "pane") setPane(true);
+        });
       },
       renderBanners,
-      refresh: () => renderRoute(route),
+      refresh: () => keepingFocus(() => renderRoute(route)),
       navigate,
       openDrawer,
       closeModal,

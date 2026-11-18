@@ -105,8 +105,9 @@ function B_tests(web, engine) {
       const drawer = app.byId("drawer");
       toggle.focus();
       toggle.click();
-      const others = ["topbar", "view", "pane"].map((id) => app.byId(id));
+      const others = ["topbar", "view", "pane", "appFooter"].map((id) => app.byId(id));
       const ok =
+        attr(app.html, "data-modal") === "drawer" &&
         !drawer.hasAttribute("hidden") &&
         attr(drawer, "role") === "dialog" &&
         attr(drawer, "aria-modal") === "true" &&
@@ -168,6 +169,60 @@ function B_tests(web, engine) {
         got.push(app.html.getAttribute("data-route"));
       }
       return { ok: got.join() === want.join(), detail: got.join(" ") };
+    },
+    async "shortcuts-skip-fields-and-composition"(src) {
+      // macOS types characters with Option+digit and Ctrl+H deletes in a
+      // field: the shortcuts stay out of selects, text fields and an input
+      // method's composition, and still work everywhere else.
+      const app = await boot({ overrides: src, width: 390 });
+      await go(app, "settings");
+      app.byId("digitsSelect").focus();
+      app.document.press("5", { alt: true });
+      app.document.press("h", { ctrl: true });
+      await tick(10);
+      const inSelect = app.html.getAttribute("data-route") === "settings" && app.byId("pane").hasAttribute("hidden");
+      app.byId("digitsSelect").blur();
+      app.document.press("5", { alt: true, composing: true });
+      await tick(10);
+      const composing = app.html.getAttribute("data-route") === "settings";
+      app.document.press("5", { alt: true });
+      await until(() => app.html.getAttribute("data-route") === "date", 1000);
+      const plain = app.html.getAttribute("data-route") === "date";
+      return { ok: inSelect && composing && plain, detail: `in a select ignored=${inSelect}, composing ignored=${composing}, on the page works=${plain}` };
+    },
+    async "settings-change-keeps-focus"(src) {
+      // Digits re-render the route; language and the pseudo-locale rebuild
+      // the shell. The select that changed keeps focus (WCAG 2.4.3, 3.2.2).
+      const app = await boot({ overrides: src, width: 390 });
+      await go(app, "settings");
+      const got = [];
+      for (const [id, value] of [["digitsSelect", "arabic-indic"], ["pseudoSelect", "en-XA"], ["pseudoSelect", "off"], ["digitsSelect", "western"]]) {
+        const before = app.byId(id);
+        before.focus();
+        before.value = value;
+        before.dispatchEvent(new Event("change"));
+        await tick(20);
+        const now = app.document.activeElement;
+        got.push({ id, value, ok: Boolean(now) && now.id === id && app.byId(id).value === value, focus: now ? now.id || now.localName : null });
+      }
+      return { ok: got.every((g) => g.ok), detail: got.map((g) => `${g.id}=${g.value} focus ${g.focus}`).join(", ") };
+    },
+    async "modal-opener-without-focus"(src) {
+      // Safari does not focus a button on tap or click: the toggle opened
+      // the modal while <body> had focus. Closing still returns to it.
+      const app = await boot({ overrides: src, width: 390 });
+      const runs = [];
+      for (const [toggle, close] of [["drawerToggle", "Escape"], ["drawerToggle", "drawerClose"], ["paneToggle", "Escape"], ["paneToggle", "paneClose"]]) {
+        if (app.document.activeElement) app.document.activeElement.blur();
+        app.byId(toggle).click();
+        const opened = app.document.activeElement !== app.document.body;
+        if (close === "Escape") app.document.press("Escape");
+        else app.byId(close).click();
+        await tick(5);
+        const at = app.document.activeElement;
+        runs.push({ toggle, close, ok: opened && at === app.byId(toggle), focus: at ? at.id || at.localName : null });
+      }
+      return { ok: runs.every((r) => r.ok), detail: runs.map((r) => `${r.toggle}/${r.close} -> ${r.focus}`).join(", ") };
     },
     async "pane-bottom-sheet"(src) {
       const app = await boot({ overrides: src, width: 390 });
@@ -432,13 +487,60 @@ function C_tests(web, engine) {
       return { ok: o.status === "unvalidated" && o.readOnly && refused.code === "read_only" && k.idb.peek("pcalc", "state.bak.1") === undefined, detail: `${o.status} ${refused.code}` };
     },
     async "quota-keeps-the-old-value"(src) {
+      // Both ways browsers report it: the put request fails (Gecko; the
+      // error event reaches the transaction before tx.error is set) and the
+      // commit aborts with tx.error (Chromium).
+      const got = [];
+      for (const hook of ["quotaExceeded", "quotaAtCommit"]) {
+        const k = await kit(src);
+        await k.store.save("state", VALID.state);
+        k.idb[hook] = true;
+        const r = await k.store.save("state", VALID.state.replace("date", "about"));
+        k.idb[hook] = false;
+        const kept = JSON.parse(k.idb.peek("pcalc", "state")).route;
+        got.push({ hook, ok: r.ok === false && r.code === "quota" && kept === "date", text: `${hook}: ${r.code}, stored route ${kept}` });
+      }
+      return { ok: got.every((g) => g.ok), detail: got.map((g) => g.text).join("; ") };
+    },
+    async "save-before-load-never-overwrites-unseen"(src) {
+      // As the desktop DocStore: a save of a document this store has not
+      // loaded loads it first, so corrupt, newer or too-large data is
+      // protected (and a corrupt one backed up), never overwritten.
+      const seeds = {
+        settings: "{damaged",
+        history: '{"schemaVersion":9}',
+        state: VALID.state + " ".repeat(256 * 1024)
+      };
       const k = await kit(src);
-      await k.store.save("state", VALID.state);
-      k.idb.quotaExceeded = true;
-      const r = await k.store.save("state", VALID.state.replace("date", "about"));
-      k.idb.quotaExceeded = false;
-      const kept = JSON.parse(k.idb.peek("pcalc", "state")).route;
-      return { ok: r.ok === false && r.code === "quota" && kept === "date", detail: `${r.code}, stored route ${kept}` };
+      for (const [name, raw] of Object.entries(seeds)) k.idb.poke("pcalc", name, raw);
+      const fresh = await kit(src, { origin: k.origin });
+      const results = [];
+      for (const [name, raw] of Object.entries(seeds)) {
+        const r = await fresh.store.save(name, name === "settings" ? JSON.stringify((await bootApp({ web, engine, overrides: src })).PCalc.prefs.DEFAULT_SETTINGS) : name === "history" ? VALID.history : VALID.state);
+        results.push({ name, ok: r.ok === false && r.code === "read_only" && k.idb.peek("pcalc", name) === raw });
+      }
+      const bak = k.idb.peek("pcalc", "settings.bak.1");
+      const noOtherBackups = k.idb.peek("pcalc", "history.bak.1") === undefined && k.idb.peek("pcalc", "state.bak.1") === undefined;
+      const missing = await fresh.store.save("countdowns", VALID.countdowns);
+      const ok = results.every((r) => r.ok) && bak && bak.raw === "{damaged" && noOtherBackups && missing.ok;
+      return { ok, detail: results.map((r) => `${r.name} ${r.ok ? "protected" : "OVERWRITTEN"}`).join(", ") + `; corrupt backed up ${Boolean(bak)}; missing doc written ${missing.ok}` };
+    },
+    async "newer-is-never-cleared"(src) {
+      const k = await kit(src);
+      const newer = '{"schemaVersion":9,"fromTheFuture":true}';
+      k.idb.poke("pcalc", "settings", newer);
+      const unseen = await k.store.clear("settings");
+      await k.store.load("settings");
+      const seen = await k.store.clear("settings");
+      // Replaced by a newer app after a corrupt load here.
+      k.idb.poke("pcalc", "state", "{bad");
+      await k.store.load("state");
+      k.idb.poke("pcalc", "state", '{"schemaVersion":5}');
+      const later = await k.store.clear("state");
+      const ok = [unseen, seen, later].every((r) => r.ok === false && r.code === "read_only") &&
+        k.idb.peek("pcalc", "settings") === newer && k.idb.peek("pcalc", "settings.bak.1") === undefined &&
+        k.idb.peek("pcalc", "state") === '{"schemaVersion":5}';
+      return { ok, detail: `unseen ${unseen.code}, loaded ${seen.code}, replaced later ${later.code}` };
     },
     async "clear-backs-up-then-starts-fresh"(src) {
       const k = await kit(src);
@@ -494,8 +596,11 @@ function C_tests(web, engine) {
       await clickLink(b, "about");
       await tick(30);
       const banner = b.document.querySelector("div[data-doc='state']");
-      const ok = banner && attr(banner, "data-state") === "newer" && origin.indexedDB.peek("pcalc", "state") === '{"schemaVersion":2}' && origin.indexedDB.peek("pcalc", "state.bak.1") === undefined;
-      return { ok, detail: `banner ${banner && attr(banner, "data-state")}, state untouched ${origin.indexedDB.peek("pcalc", "state") === '{"schemaVersion":2}'}` };
+      // Retry only: "Start fresh" would back up and replace the newer
+      // app's live document (B10: never written, never backed up).
+      const buttons = banner ? banner.querySelectorAll("button").map((n) => n.textContent) : [];
+      const ok = banner && attr(banner, "data-state") === "newer" && buttons.join() === "Retry" && origin.indexedDB.peek("pcalc", "state") === '{"schemaVersion":2}' && origin.indexedDB.peek("pcalc", "state.bak.1") === undefined;
+      return { ok, detail: `banner ${banner && attr(banner, "data-state")}, buttons [${buttons.join(", ")}], state untouched ${origin.indexedDB.peek("pcalc", "state") === '{"schemaVersion":2}'}` };
     },
     async "ui-save-failure-is-shown"(src) {
       const origin = createOrigin();
@@ -540,13 +645,22 @@ export const MUTANTS = [
   ["B", "theme-switch-instant-and-saved", "src/core/theme.js", "writeMirror(MIRROR, current);", "void MIRROR;"],
   ["B", "i18n-catalog-and-units", "src/core/i18n.js", "if (o.i10 >= 2 && o.i10 <= 4 && !(o.i100 >= 12 && o.i100 <= 14)) return \"few\";", "if (o.i10 >= 2 && o.i10 <= 4) return \"few\";"],
   ["B", "last-route-restored", "src/boot.js", "ns.router.replace(last);", "void last;"],
+  ["B", "drawer-modal-inert", "src/shell/shell.js", 'nodes.pane, byId("appFooter")]', "nodes.pane]"],
+  ["B", "drawer-modal-inert", "src/shell/shell.js", 'document.documentElement.setAttribute("data-modal", name);', "void name;"],
+  ["B", "shortcuts-skip-fields-and-composition", "src/shell/shell.js", "if (e.isComposing || editable(e.target)) return;", ""],
+  ["B", "settings-change-keeps-focus", "src/shell/shell.js", "if (again && again !== document.activeElement) again.focus({ preventScroll: true });", "void again;"],
+  ["B", "modal-opener-without-focus", "src/shell/shell.js", "return toggle;", "return active;"],
+  ["C", "ui-newer-banner", "src/shell/shell.js", 'if (o.status === "newer") {', "if (false) {"],
   ["C", "corrupt-backup-first-then-read-only", "src/core/store.js", "const wrote = await backend.rotate(name, entry, (old) => old && sameRaw(old.raw, raw));", "const wrote = false && entry;"],
   ["C", "corrupt-backup-first-then-read-only", "src/core/store.js", 'if (readOnly.has(name)) return { ok: false, code: "read_only" };', ""],
   ["C", "too-large-is-read-only-never-corrupt", "src/core/store.js", 'if (code === "request_too_large") return outcome(name, "tooLarge");', ""],
   ["C", "newer-is-read-only-without-backup", "src/core/store.js", 'if (r.status === "newer") return outcome(name, "newer", { schemaVersion: r.schemaVersion });', ""],
   ["C", "backups-keep-the-newest-three", "src/core/store.js", "const BACKUPS = 3;", "const BACKUPS = 4;"],
   ["C", "ui-read-only-banner-and-start-fresh", "src/shell/shell.js", "if (resetArmed === name) {", "if (true) {"],
-  ["C", "rescue-reads-without-creating", "src/rescue.js", "req.transaction.abort();", "void req;"]
+  ["C", "rescue-reads-without-creating", "src/rescue.js", "req.transaction.abort();", "void req;"],
+  ["C", "quota-keeps-the-old-value", "src/core/store.js", "tx.onerror = (e) => reject((e && e.target && e.target.error) || tx.error", "tx.onerror = () => reject(tx.error"],
+  ["C", "save-before-load-never-overwrites-unseen", "src/core/store.js", "      if (!loaded.has(name)) await load(name);\n      if (readOnly.has(name))", "      if (readOnly.has(name))"],
+  ["C", "newer-is-never-cleared", "src/core/store.js", 'if (env && env.ok === "true" && env.result && env.result.status === "newer") {', "if (false) {"]
 ];
 
 export async function runShellSlices({ web, engine, check, skip }) {
@@ -567,9 +681,12 @@ export async function runShellSlices({ web, engine, check, skip }) {
       check(`${slice}.${name}`, r.ok, r.detail);
     }
   }
+  const seen = new Map();
   for (const [slice, test, file, from, to] of MUTANTS) {
     const original = readFileSync(join(web, file), "utf8");
-    const id = `${slice}.mutant.${test}.${file.split("/").pop()}`;
+    const base = `${slice}.mutant.${test}.${file.split("/").pop()}`;
+    seen.set(base, (seen.get(base) || 0) + 1);
+    const id = seen.get(base) > 1 ? `${base}#${seen.get(base)}` : base;
     if (!original.includes(from)) {
       check(id, false, `mutation site not found in ${file}: ${from.trim()}`);
       continue;

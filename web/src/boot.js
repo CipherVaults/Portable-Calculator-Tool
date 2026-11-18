@@ -227,10 +227,10 @@
       const [persisted, estimate] = await Promise.all([ctx.persisted, platform.estimate()]);
       if (persisted === true || persisted === false) persistNode.textContent = t("settings.storage.persist." + String(persisted));
       if (estimate && estimate.quota > 0) {
-        estimateNode.textContent = t("settings.storage.estimate", {
-          used: ns.format.bytes(estimate.usage, ctx.lang, { digits: ctx.digits }),
-          quota: ns.format.bytes(estimate.quota, ctx.lang, { digits: ctx.digits })
-        });
+        show(estimateNode, ns.dom.withValues(t("settings.storage.estimate", {
+          used: ns.dom.value(ns.format.bytes(estimate.usage, ctx.lang, { digits: ctx.digits })),
+          quota: ns.dom.value(ns.format.bytes(estimate.quota, ctx.lang, { digits: ctx.digits }))
+        })));
       }
     };
     return ctx;
@@ -269,11 +269,32 @@
 
   // ---- service worker (web, served over http(s) only) ---------------------------
 
+  // Under the web CSP's Trusted Types the registration needs a script URL
+  // from the one policy, which passes "sw.js" and nothing else.
+  function workerUrl() {
+    const tt = window.trustedTypes;
+    if (!tt || typeof tt.createPolicy !== "function") return "sw.js";
+    const policy = tt.createPolicy("pcalc", {
+      createScriptURL: (url) => {
+        if (url !== "sw.js") throw new TypeError("script URL not allowed");
+        return url;
+      }
+    });
+    return policy.createScriptURL("sw.js");
+  }
+
   function registerServiceWorker() {
     if (ns.build.target !== "web" || !("serviceWorker" in navigator)) return;
     const proto = window.location.protocol;
     if (proto !== "https:" && proto !== "http:") return;
-    navigator.serviceWorker.register("sw.js", { scope: "./" }).then(
+    let url;
+    try {
+      url = workerUrl();
+    } catch (_) {
+      root.setAttribute("data-sw", "failed");
+      return;
+    }
+    navigator.serviceWorker.register(url, { scope: "./" }).then(
       () => root.setAttribute("data-sw", "registered"),
       () => root.setAttribute("data-sw", "failed")
     );

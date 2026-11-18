@@ -382,7 +382,8 @@ class Document extends Node {
       altKey: Boolean(mods.alt),
       ctrlKey: Boolean(mods.ctrl),
       metaKey: Boolean(mods.meta),
-      shiftKey: Boolean(mods.shift)
+      shiftKey: Boolean(mods.shift),
+      isComposing: Boolean(mods.composing)
     };
     const target = this.activeElement || this.body;
     const ev = new Event("keydown", { props });
@@ -492,6 +493,7 @@ class FakeTransaction {
     this.pending = 0;
     this.state = "active";
     this.staged = new Map(db.data);
+    this.wrote = false;
     this.error = null;
     this.oncomplete = null;
     this.onerror = null;
@@ -513,8 +515,13 @@ class FakeTransaction {
           r.result = fn();
           if (typeof r.onsuccess === "function") r.onsuccess({ target: r });
         } catch (err) {
+          // As in browsers: the error event fires at the request, then
+          // bubbles to the transaction (whose .error is still null), and
+          // only then does the transaction abort with the request's error.
           r.error = err;
-          if (typeof r.onerror === "function") r.onerror({ target: r, preventDefault() {} });
+          const event = { target: r, preventDefault() {} };
+          if (typeof r.onerror === "function") r.onerror(event);
+          if (typeof tx.onerror === "function") tx.onerror(event);
           tx.abort(err);
           return;
         }
@@ -536,6 +543,7 @@ class FakeTransaction {
         write();
         return req(() => {
           if (factory.quotaExceeded) throw domError("QuotaExceededError", "simulated quota");
+          tx.wrote = true;
           tx.staged.set(key, structuredClone(value));
           return key;
         });
@@ -554,6 +562,11 @@ class FakeTransaction {
   scheduleCommit() {
     setTimeout(() => {
       if (this.state !== "active" || this.pending > 0) return;
+      if (this.mode === "readwrite" && this.db.factory.quotaAtCommit && this.wrote) {
+        // Chromium's way: every request succeeded, the commit fails.
+        this.abort(domError("QuotaExceededError", "simulated quota at commit"));
+        return;
+      }
       this.state = "done";
       if (this.mode === "readwrite") {
         this.db.data = this.staged;
@@ -566,8 +579,9 @@ class FakeTransaction {
     if (this.state !== "active") return;
     this.state = "aborted";
     this.error = err || domError("AbortError", "aborted");
+    // Only "abort" fires at the transaction; a request's "error" (above)
+    // has already reached its onerror.
     setTimeout(() => {
-      if (typeof this.onerror === "function") this.onerror({ target: this });
       if (typeof this.onabort === "function") this.onabort({ target: this });
     }, 0);
   }
@@ -612,13 +626,16 @@ class FakeDb {
 }
 
 // One origin's IndexedDB. Hooks: failOpen ("error" | "blocked" | "hang"),
-// failReads, quotaExceeded. `writes` counts committed write transactions.
+// failReads, quotaExceeded (the put request fails, as in Gecko) and
+// quotaAtCommit (the requests succeed and the commit aborts, as in
+// Chromium). `writes` counts committed write transactions.
 export class FakeIndexedDB {
   constructor() {
     this.dbs = new Map();
     this.failOpen = null;
     this.failReads = false;
     this.quotaExceeded = false;
+    this.quotaAtCommit = false;
     this.writes = 0;
     this.opens = 0;
   }

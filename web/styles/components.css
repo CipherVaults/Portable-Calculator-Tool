@@ -45,6 +45,11 @@ body {
   font-family: var(--font-mono);
 }
 
+/* A formatted number or date (dom.withValues) never breaks across lines. */
+.num {
+  white-space: nowrap;
+}
+
 :focus-visible {
   outline: 2px var(--focus-style) var(--focus-ring);
   outline-offset: 2px;

@@ -7,7 +7,7 @@
 (function () {
   "use strict";
   const ns = window.PCalc;
-  const { el } = ns.dom;
+  const { el, value, withValues } = ns.dom;
 
   const MILESTONES = Object.freeze({
     standard: "M5b", scientific: "M5c", graphing: "M8", programmer: "M6",
@@ -85,10 +85,12 @@
       Object.keys(ns.catalogs).map((code) => [code, ns.i18n.NATIVE_NAMES[code] || code])
     );
     const sample = t("settings.sample", {
-      number: f.isolate(f.formatNumber("1234567.89", ctx.lang, { digits: ctx.digits, grouping: s.display.grouping })),
-      date: f.isolate(f.formatDate("2026-11-18", ctx.lang, { digits: ctx.digits }))
+      number: value(f.isolate(f.formatNumber("1234567.89", ctx.lang, { digits: ctx.digits, grouping: s.display.grouping }))),
+      date: value(f.isolate(f.formatDate("2026-11-18", ctx.lang, { digits: ctx.digits })))
     });
-    const storageNote = el("p", { className: "status", attrs: { id: "storageEstimate", "aria-live": "polite" } });
+    // Static facts, filled in once known: no live region (it would be
+    // announced again on every re-render of Settings).
+    const storageNote = el("p", { className: "status", attrs: { id: "storageEstimate" } });
     const persistNote = el("p", { className: "status", attrs: { id: "storagePersist" } });
     ctx.describeStorage(storageNote, persistNote);
 
@@ -104,7 +106,7 @@
           ["western", t("settings.digits.western")],
           ["arabic-indic", t("settings.digits.arabic")]
         ], s.language.digits, (v) => ctx.setDigits(v)),
-        el("p", { className: "sample", text: sample, attrs: { id: "formatSample", dir: "auto" } }),
+        el("p", { className: "sample", attrs: { id: "formatSample", dir: "auto" } }, withValues(sample)),
         el("p", { className: "hint", text: t("settings.language.note") })
       ], { id: "settingsLanguage" }),
       panel(t("settings.storage"), [

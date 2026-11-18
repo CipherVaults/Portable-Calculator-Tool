@@ -248,6 +248,7 @@ for (const [name, line] of CSS_MUTANTS) {
     ["daylight-muted-too-light", inBlock(daylight, "--muted: #5D6475;", "--muted: #9AA0AC;")],
     ["terminal-focus-ring-too-dim", tokens.replace("--focus-ring: var(--gold);", "--focus-ring: #30333b;")],
     ["retro-bar-gradient-end-as-first-planned", inBlock(retro, "--bar-bg-end: #0f78bd;", "--bar-bg-end: #1084D0;")],
+    ["retro-selected-focus-ring-black-on-navy", inBlock(retro, "--focus-ring-selected: #FFFFFF;", "--focus-ring-selected: #000000;")],
     ["retro-token-missing", inBlock(retro, "  --selected-text: #FFFFFF;\n", "")],
     ["theme-block-missing", tokens.replace('[data-theme="retro"] {', '[data-theme="retro-old"] {')]
   ];

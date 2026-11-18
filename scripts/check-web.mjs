@@ -49,6 +49,7 @@ export const PAIRS = [
   ["--focus-ring", "--surface", 3, "focus ring on panels"],
   ["--focus-ring", "--bg", 3, "focus ring on the page"],
   ["--focus-ring", "--surface-raised", 3, "focus ring on raised panels"],
+  ["--focus-ring-selected", "--selected-bg", 3, "focus ring inside the selected tab and the current link"],
   ["--bar-focus", "--bar-bg", 3, "focus ring in the top bar"],
   ["--control-border", "--surface", 3, "button and field boundaries"],
   ["--control-border", "--button-bg", 3, "button boundaries"]

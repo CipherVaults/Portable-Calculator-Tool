@@ -9,6 +9,8 @@
 // Test hooks (browser-boot only): `transform(rel, bytes)` may return other
 // bytes for a file (a tampered engine), and returning null answers 404 (a
 // blocked engine). Every served path is counted in `server.hits`.
+// `setTransform(fn)` swaps the hook on a running server (the upgrade test
+// serves a stale index.html next to a new sw.js, as a CDN edge might).
 import { createServer } from "node:http";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { extname, resolve, sep } from "node:path";
@@ -63,11 +65,12 @@ function resolveFile(root, base, pathname) {
 }
 
 // Starts the server; resolves to {server, url, port, hits, setDir(dir),
-// close()}. setDir switches the served folder on the same origin (the
+// setTransform(fn), close()}. setDir switches the served folder on the same origin (the
 // browser-boot upgrade test serves build N, then build N+1); close() stops
 // listening (the same test's "offline").
 export function startStaticServer({ dir, base = BASE, port = 0, transform = null }) {
   let root = realpathSync(dir);
+  let transformFn = transform;
   const hits = new Map();
   const server = createServer((req, res) => {
     if (req.method !== "GET" && req.method !== "HEAD") {
@@ -92,8 +95,8 @@ export function startStaticServer({ dir, base = BASE, port = 0, transform = null
     }
     hits.set(file.rel, (hits.get(file.rel) || 0) + 1);
     let body = readFileSync(file.path);
-    if (transform) {
-      const changed = transform(file.rel, body);
+    if (transformFn) {
+      const changed = transformFn(file.rel, body);
       if (changed === null) {
         send(res, 404, "Not Found\n");
         return;
@@ -121,6 +124,9 @@ export function startStaticServer({ dir, base = BASE, port = 0, transform = null
         hits,
         setDir: (next) => {
           root = realpathSync(next);
+        },
+        setTransform: (fn) => {
+          transformFn = fn || null;
         },
         close: () =>
           new Promise((done) => {
