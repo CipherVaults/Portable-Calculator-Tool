@@ -12,6 +12,7 @@ import { Event, createOrigin, createWindow, tick, until } from "./mini-dom.mjs";
 import { bootApp, fakeTauri, readSources } from "./web-harness.mjs";
 import { catalogProblems, loadModules, unitResults, usageProblems } from "../check-i18n.mjs";
 import { DATE_MUTANTS, dateBTests, dateCTests } from "./eval-date.mjs";
+import { PERCENT_MUTANTS, percentBTests, percentCTests } from "./eval-percent.mjs";
 
 const RLO = "‮";
 
@@ -94,12 +95,13 @@ function B_tests(web, engine) {
         await go(app, r);
         const title = app.byId("routeTitle").textContent;
         if (!title || title.startsWith("route.")) missing.push(r + " title");
-        if (!["settings", "about", "date"].includes(r) && !app.document.querySelector("section[data-state='placeholder']")) missing.push(r + " placeholder");
+        if (!["settings", "about", "date", "percent"].includes(r) && !app.document.querySelector("section[data-state='placeholder']")) missing.push(r + " placeholder");
         if (r === "date" && app.document.querySelectorAll(".tool-card").length !== 6) missing.push("date cards");
+        if (r === "percent" && app.document.querySelectorAll(".tool-card").length !== 8) missing.push("percent cards");
       }
       await go(app, "about");
       const pass = app.document.querySelectorAll(".check.pass").length;
-      return { ok: missing.length === 0 && pass === 5, detail: missing.join(", ") || `21 routes render (Date: 6 cards); about ${pass}/5 checks` };
+      return { ok: missing.length === 0 && pass === 5, detail: missing.join(", ") || `21 routes render (Date: 6 cards, Percentage: 8); about ${pass}/5 checks` };
     },
     async "drawer-modal-inert"(src) {
       const app = await boot({ overrides: src, width: 390 });
@@ -788,7 +790,10 @@ export async function runShellSlices({ web, engine, check, skip }) {
     skip("C.*", "needs target/engine/engine.wasm");
     return;
   }
-  const suites = { B: { ...B_tests(web, engine), ...dateBTests(web, engine) }, C: { ...C_tests(web, engine), ...dateCTests(web, engine) } };
+  const suites = {
+    B: { ...B_tests(web, engine), ...dateBTests(web, engine), ...percentBTests(web, engine) },
+    C: { ...C_tests(web, engine), ...dateCTests(web, engine), ...percentCTests(web, engine) }
+  };
   for (const [slice, tests] of Object.entries(suites)) {
     for (const [name, fn] of Object.entries(tests)) {
       let r;
@@ -801,7 +806,7 @@ export async function runShellSlices({ web, engine, check, skip }) {
     }
   }
   const seen = new Map();
-  for (const [slice, test, file, from, to] of [...MUTANTS, ...DATE_MUTANTS]) {
+  for (const [slice, test, file, from, to] of [...MUTANTS, ...DATE_MUTANTS, ...PERCENT_MUTANTS]) {
     const original = readFileSync(join(web, file), "utf8");
     const base = `${slice}.mutant.${test}.${file.split("/").pop()}`;
     seen.set(base, (seen.get(base) || 0) + 1);

@@ -39,6 +39,16 @@
 //                no write on a tick, input or page hide, the cap of 20 and
 //                Delete, a newer document never written, another tab's
 //                change adopted without writing
+//   B.percent-*  the Percentage tool (scripts/lib/eval-percent.mjs, PCT v2.3.0
+//                behaviour): the eight cards' live results, formulas and
+//                result lines, their parity with the engine's label,
+//                liveResult and copyText, no markup ever taken from the
+//                engine's "<br>" labels, errors and out of range, swap, tip
+//                presets and people, tax mode, paste cleaning, an IPC race,
+//                the history hook, the session model, the layout and Reset,
+//                and the desktop adapter
+//   C.percent-*  settings.percent: the layout a launch restores (without a
+//                write), and a read-only settings document never written
 //   B/C.mutant.* each important rule broken by a one-line mutant that the
 //                same test must catch
 // Slice D proves that each static rule actually fires, so a passing build

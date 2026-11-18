@@ -85,6 +85,15 @@
 //              the Egypt preset (Fri/Sat, Hijri offset), all three themes
 //              and both pseudo-locales; each case is a layout check (and a
 //              screenshot with --shots). --date-only runs just this group
+//   percent    the Percentage tool at 390 px (and 360, 440, 1280): real taps
+//              and typing on Discount (two text lines, no <br>, no "<"),
+//              Enter records history, every card's live result as
+//              Percentage Calculator v2.3.0 shows it, a tip preset, the
+//              tax mode and a swap by tap, the Move menu, every card
+//              collapsed, a reload restoring the layout, Settings > Reset,
+//              all three themes and both pseudo-locales; each case is a
+//              layout check (and a screenshot with --shots).
+//              --percent-only runs just this group
 //   upgrade    build N+1 (a copy of web/ with one changed byte, built into
 //              target/browser-boot/) on the same origin as build N: boot N
 //              and let its service worker take over, switch the server to
@@ -104,7 +113,7 @@
 //
 //   node scripts/browser-boot.mjs [--dist <dir>] [--edge <path>] [--runs N]
 //                                 [--json <path>] [--shots <dir>] [--skip-upgrade]
-//                                 [--date-only]
+//                                 [--date-only] [--percent-only]
 //
 // Edge: --edge, else $PCALC_EDGE, else the usual install paths. WebKit
 // (Safari/iOS) and Gecko (Firefox) are not driven here; they stay manual
@@ -136,6 +145,7 @@ function parseArgs(argv) {
     else if (a === "--shots") opts.shots = resolve(argv[++i] || fail("--shots needs a path"));
     else if (a === "--skip-upgrade") opts.upgrade = false;
     else if (a === "--date-only") opts.dateOnly = true;
+    else if (a === "--percent-only") opts.percentOnly = true;
     else if (a === "--edge") opts.edge = resolve(argv[++i] || fail("--edge needs a path"));
     else if (a === "--json") opts.json = resolve(argv[++i] || fail("--json needs a path"));
     else if (a === "--runs") {
@@ -354,12 +364,17 @@ async function openPage(edge, url, { keepOpen = false, preScripts = [] } = {}) {
     },
     // A key press as the browser delivers it (keydown + keyup).
     async key(key, { alt = false, ctrl = false, shift = false } = {}) {
-      const KEYS = { Tab: [9, "Tab"], Escape: [27, "Escape"], ArrowRight: [39, "ArrowRight"], ArrowLeft: [37, "ArrowLeft"], ArrowDown: [40, "ArrowDown"], ArrowUp: [38, "ArrowUp"] };
+      const KEYS = { Tab: [9, "Tab"], Enter: [13, "Enter"], Escape: [27, "Escape"], ArrowRight: [39, "ArrowRight"], ArrowLeft: [37, "ArrowLeft"], ArrowDown: [40, "ArrowDown"], ArrowUp: [38, "ArrowUp"] };
       const [vk, code] = KEYS[key] || (/^\d$/.test(key) ? [48 + Number(key), "Digit" + key] : [key.toUpperCase().charCodeAt(0), "Key" + key.toUpperCase()]);
       const modifiers = (alt ? 1 : 0) | (ctrl ? 2 : 0) | (shift ? 8 : 0);
       const base = { key, code, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk, modifiers };
       await cdp.send("Input.dispatchKeyEvent", { type: "rawKeyDown", ...base }, sessionId);
       await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", ...base }, sessionId);
+      await new Promise((r) => setTimeout(r, 30));
+    },
+    // Text typed into the focused field (as a keyboard or IME inserts it).
+    async type(text) {
+      await cdp.send("Input.insertText", { text }, sessionId);
       await new Promise((r) => setTimeout(r, 30));
     },
     // A real tap (mouse press and release) at the centre of `selector`.
@@ -1161,6 +1176,170 @@ async function dateChecks(edgePath, url, shots) {
   return saved;
 }
 
+// ---------------------------------------------------------------------------
+// The Percentage tool (M2c) in a real browser at phone widths
+// ---------------------------------------------------------------------------
+
+const P_ORDER = `[...document.getElementById("percentCards").children].map((c) => c.dataset.card).join(",")`;
+const P_CARDS = ["change", "percent", "what", "discount", "base", "markup", "tax", "tip"];
+const P_LINES = (key) => `[...document.querySelectorAll("#${key}Result .result-main, #${key}Result .result-sub")].map((n) => n.textContent)`;
+
+async function percentChecks(edgePath, url, shots) {
+  const edge = await launchEdge(edgePath, []);
+  const saved = [];
+  try {
+    const { tab } = await openPage(edge, url + "#/percent", { keepOpen: true });
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const shot = async (id) => {
+      if (!shots) return;
+      const path = join(shots, `percent-${id.replace(/[^a-z0-9-]+/gi, "_")}.png`);
+      await tab.screenshot(path);
+      saved.push(path);
+    };
+    const record = async (id, extra = () => null) => {
+      const l = await json(tab, LAYOUT);
+      const more = await extra(l);
+      const ok = l.scrollWidth <= l.vw && l.outside.length === 0 && l.small.length === 0 && l.clipped.length === 0 && l.broken.length === 0 && !more;
+      expect(`percent.layout.${id}`, ok, JSON.stringify({ scrollWidth: l.scrollWidth, vw: l.vw, outside: l.outside.slice(0, 4), small: l.small.slice(0, 4), clipped: l.clipped.slice(0, 4), broken: l.broken.slice(0, 4), more }));
+      await shot(id);
+    };
+    const scrollTo = (sel) => tab.evaluate(`(() => { const n = document.querySelector(${JSON.stringify(sel)}); n.scrollIntoView({ block: "start" });
+      scrollBy(0, -(document.getElementById("topbar").getBoundingClientRect().height + 8)); return true; })()`);
+    const phoneBar = async () => phoneBarProblem(await json(tab, BAR(true)));
+    // Inputs and buttons at least 44 px tall (the layout probe covers buttons only).
+    const fields = async () => {
+      const small = await json(tab, `[...document.querySelectorAll("#percentTool input")].filter((n) => n.getBoundingClientRect().height < 43.5).map((n) => n.id)`);
+      return small.length ? "small inputs " + small.join(",") : null;
+    };
+
+    await tab.viewport(390, 844);
+    await goRoute(tab, "percent");
+    await waitFor(tab, `document.getElementById("percentCards") && document.getElementById("percentCards").children.length === 8`);
+    await record("390.top", async () => (await phoneBar()) || (await fields()));
+    // Real taps and typing on Discount: the two lines are text, never "<br>".
+    await scrollTo("#card-discount");
+    await tab.tap("#discountPrice");
+    await tab.type("79.99");
+    await tab.tap("#discountPercent");
+    await tab.type("20");
+    await waitFor(tab, `${TEXT("discountLive")} === "→ final: 63.99 | saved: 16.00"`);
+    const disc = await json(tab, `({ lines: ${P_LINES("discount")}, br: document.querySelectorAll("#percentTool br").length, angle: document.getElementById("percentTool").textContent.includes("<"),
+      formula: [...document.querySelectorAll("#discountFormula li")].map((n) => n.textContent) })`);
+    expect("percent.discount-typed-text-only", disc.lines.join("|") === "Final: 63.99|Saved: 16.00" && disc.br === 0 && !disc.angle &&
+      disc.formula.join("|") === "final = 79.99 × (1 − 20/100) = 63.99|saved = 79.99 × 20/100 = 16.00", JSON.stringify(disc));
+    // Enter in a field records history; typing alone did not.
+    const before = await tab.evaluate(`window.PCalc.history.pending().length`);
+    await tab.key("Enter");
+    await waitFor(tab, `window.PCalc.history.pending().length === ${before + 1}`);
+    const entry = await json(tab, `window.PCalc.history.pending().pop()`);
+    expect("percent.enter-records", before === 0 && entry.tool === "percent" && entry.calculator === "discount" && entry.copyText === "Final: 63.99\nSaved: 16.00", JSON.stringify({ before, entry }));
+    // Every other card filled; each live result as Percentage Calculator v2.3.0 shows it.
+    for (const [id, v] of [["changeOrig", "150"], ["changeNew", "180"], ["isWhatX", "50"], ["isWhatY", "200"], ["whatX", "20"], ["whatY", "500"],
+      ["baseX", "50"], ["baseY", "25"], ["markupCost", "80"], ["markupPrice", "100"], ["taxAmount", "100"], ["taxRate", "15"], ["tipBill", "100"], ["tipPercent", "20"], ["tipPeople", "3"]]) {
+      await tab.evaluate(PUT(id, v));
+    }
+    await waitFor(tab, `${TEXT("tipLive")} !== "→ —" && ${TEXT("markupLive")} !== "→ —"`, 4000);
+    const lives = await json(tab, `${JSON.stringify(P_CARDS)}.map((k) => document.getElementById(k + "Live").textContent)`);
+    expect("percent.live-results", lives.join("|") === ["→ 20.00% increase", "→ 25.00%", "→ 100.00", "→ final: 63.99 | saved: 16.00", "→ 200.00",
+      "→ Profit: 20.00 | Markup: 25.00% | Margin: 20.00%", "→ Total: 115.00 | Tax: 15.00", "→ Each: 40.00 · Total: 120.00"].join("|"), JSON.stringify(lives));
+    await tab.evaluate(`document.activeElement.blur(); true`);
+    for (const key of P_CARDS) {
+      await scrollTo(`#card-${key}`);
+      await record(`390.${key}`, async () => (await phoneBar()) || (await fields()));
+    }
+    // Real taps: a tip preset, the tax mode, a swap.
+    await scrollTo("#card-tip");
+    await tab.tap("#tipPreset-15");
+    await waitFor(tab, `${TEXT("tipLive")} === "→ Each: 38.33 · Total: 115.00"`);
+    const preset = await json(tab, `({ value: document.getElementById("tipPercent").value, pressed: document.getElementById("tipPreset-15").getAttribute("aria-pressed"),
+      h: Math.round(document.getElementById("tipPreset-15").getBoundingClientRect().height) })`);
+    expect("percent.tip-preset-tap", preset.value === "15" && preset.pressed === "true" && preset.h >= 44, JSON.stringify(preset));
+    await record("390.tip-preset", phoneBar);
+    await scrollTo("#card-tax");
+    await tab.tap("#taxMode-extract");
+    await waitFor(tab, `${TEXT("taxLive")} === "→ Net: 86.96 | Tax: 13.04"`);
+    const mode = await json(tab, `({ label: document.getElementById("taxAmountLabel").textContent, pressed: document.getElementById("taxMode-extract").getAttribute("aria-pressed"), lines: ${P_LINES("tax")} })`);
+    expect("percent.tax-mode-tap", mode.label === "Total amount (tax-inclusive)" && mode.pressed === "true" && mode.lines.join("|") === "Net: 86.96|Tax: 13.04 (Total: 100.00)", JSON.stringify(mode));
+    await record("390.tax-extract", phoneBar);
+    await scrollTo("#card-change");
+    await tab.tap("#changeSwapBtn");
+    await waitFor(tab, `${TEXT("changeLive")} === "→ 16.67% decrease"`);
+    expect("percent.swap-tap", (await tab.evaluate(`document.getElementById("changeOrig").value + "," + document.getElementById("changeNew").value`)) === "180,150", "");
+    // The Move menu from a tap, then every card collapsed and a reload.
+    await scrollTo("#card-markup");
+    await tab.tap("#card-markup .card-handle");
+    const menu = await json(tab, `(() => { const m = document.getElementById("cardMoveMenu"); return { open: !m.hidden, inMarkup: document.getElementById("card-markup").contains(m),
+      heights: [...m.querySelectorAll("button")].map((x) => Math.round(x.getBoundingClientRect().height)) }; })()`);
+    expect("percent.move-menu-tap", menu.open && menu.inMarkup && menu.heights.every((h) => h >= 44), JSON.stringify(menu));
+    await record("390.move-menu", phoneBar);
+    await tab.tap("#cardMoveMenu button[data-value=up]");
+    await tab.tap("#cardMoveMenu button[data-value=done]");
+    const moved = await tab.evaluate(P_ORDER);
+    expect("percent.move-menu-moves", moved === "change,percent,what,discount,markup,base,tax,tip", moved);
+    for (const key of P_CARDS) await tab.evaluate(`document.querySelector("#card-${key} .card-collapse").click(); true`);
+    await tab.evaluate(`scrollTo(0, 0); true`);
+    await record("390.all-collapsed", phoneBar);
+    await wait(250);
+    const stored = await json(tab, IDB_GET("settings"));
+    const pct = stored ? JSON.parse(stored).percent : null;
+    expect("percent.layout-persisted", Boolean(pct && pct.cardOrder.join() === "change,percent,what,discount,markup,base,tax,tip" && pct.collapsedCards.length === 8), JSON.stringify(pct));
+    await tab.navigate(url + "#/percent");
+    await waitFor(tab, `document.getElementById("percentCards") && document.getElementById("percentCards").children.length === 8`);
+    const after = await json(tab, `({ order: ${P_ORDER}, collapsed: document.querySelectorAll(".tool-card.is-collapsed").length })`);
+    expect("percent.reload-restores", after.order === "change,percent,what,discount,markup,base,tax,tip" && after.collapsed === 8, JSON.stringify(after));
+    // Settings > Percentage > Layout > Reset.
+    await goRoute(tab, "settings");
+    await scrollTo("#settingsPercentLayout");
+    await record("390.settings-layout", phoneBar);
+    await tab.tap("#percentLayoutResetBtn");
+    await wait(150);
+    await goRoute(tab, "percent");
+    const reset = await json(tab, `({ order: ${P_ORDER}, collapsed: document.querySelectorAll(".tool-card.is-collapsed").length })`);
+    expect("percent.layout-reset", reset.order === P_CARDS.join() && reset.collapsed === 0, JSON.stringify(reset));
+    // Fill again (a reload starts a new session) for the other widths, themes and languages.
+    for (const [id, v] of [["markupCost", "80"], ["markupPrice", "100"], ["tipBill", "1234567.89"], ["tipPercent", "18"], ["tipPeople", "7"]]) await tab.evaluate(PUT(id, v));
+    await waitFor(tab, `${TEXT("tipLive")} !== "→ —"`);
+    for (const width of [360, 440]) {
+      await tab.viewport(width, 800);
+      await goRoute(tab, "percent");
+      await scrollTo("#card-tax");
+      await record(`${width}.tax`, phoneBar);
+      await scrollTo("#card-tip");
+      await record(`${width}.tip`, phoneBar);
+    }
+    await tab.viewport(390, 844);
+    for (const theme of ["daylight", "retro", "terminal"]) {
+      await pickTheme(tab, theme);
+      await goRoute(tab, "percent");
+      await scrollTo("#card-tip");
+      await record(`390.${theme}-tip`, phoneBar);
+    }
+    for (const pseudo of ["en-XA", "ar-XB"]) {
+      await pickPseudo(tab, pseudo);
+      await goRoute(tab, "percent");
+      await tab.evaluate(`scrollTo(0, 0); true`);
+      await record(`390.${pseudo}-top`, phoneBar);
+      await scrollTo("#card-markup");
+      await record(`390.${pseudo}-markup`, phoneBar);
+      await scrollTo("#card-tip");
+      await record(`390.${pseudo}-tip`, phoneBar);
+    }
+    await pickPseudo(tab, "off");
+    // Wider: inputs and the live formula side by side at 1280 px.
+    await tab.viewport(1280, 900, false);
+    await goRoute(tab, "percent");
+    await scrollTo("#card-markup");
+    const sideBySide = await json(tab, `(() => { const g = document.querySelector("#card-markup .card-grid"); const [a, b] = g.children; return a.getBoundingClientRect().top === b.getBoundingClientRect().top; })()`);
+    expect("percent.wide-two-columns", sideBySide === true, String(sideBySide));
+    await record("1280.markup");
+    expect("percent.no-console-errors", errorCount(tab.logs) === 0, describeLogs(tab.logs));
+    await tab.close();
+  } finally {
+    await edge.close();
+  }
+  return saved;
+}
+
 // Build N+1: a copy of web/ with one changed byte, built into target/.
 function buildNext(dist, info) {
   const work = join(ROOT, "target", "browser-boot");
@@ -1313,6 +1492,16 @@ async function main() {
   const edgePath = findEdge(opts.edge);
   const timing = {};
 
+  if (opts.percentOnly) {
+    const server = await startStaticServer({ dir: join(opts.dist, "web") });
+    let shots = [];
+    try {
+      shots = await percentChecks(edgePath, server.url, opts.shots);
+    } finally {
+      await server.close();
+    }
+    return report(opts, "Edge", edgePath, timing, info, engineSha, shots);
+  }
   if (opts.dateOnly) {
     const server = await startStaticServer({ dir: join(opts.dist, "web") });
     let shots = [];
@@ -1414,6 +1603,12 @@ async function main() {
     screenshots = screenshots.concat(await dateChecks(edgePath, dateServer.url, opts.shots));
   } finally {
     await dateServer.close();
+  }
+  const percentServer = await startStaticServer({ dir: join(opts.dist, "web") });
+  try {
+    screenshots = screenshots.concat(await percentChecks(edgePath, percentServer.url, opts.shots));
+  } finally {
+    await percentServer.close();
   }
   if (opts.upgrade) await upgradeChecks(edgePath, opts.dist, info);
   return report(opts, browser, edgePath, timing, info, engineSha, screenshots);
