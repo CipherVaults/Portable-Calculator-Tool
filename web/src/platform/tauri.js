@@ -13,6 +13,7 @@
     available: () => core() !== null,
     init: async () => undefined,
     engine: (op, req) => core().invoke("engine_call", { op, req }),
+    engineInfo: () => ({ kind: "native", sha256: null }),
     isSmokeTest: () => core().invoke("is_smoke_test"),
     reportSmoke: (passed, details) => core().invoke("report_smoke_result", { passed, details })
   });

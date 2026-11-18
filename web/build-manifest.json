@@ -10,6 +10,7 @@
     "src/core/engine-web.js",
     "src/platform/tauri.js",
     "src/platform/web.js",
+    "src/rescue.js",
     "src/boot.js"
   ],
   "styles": [

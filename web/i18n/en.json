@@ -21,7 +21,26 @@
   "result.fail": "Failed",
   "versions.api": "API {version}",
   "versions.engine": "{name} {version}",
-  "unsupported.title": "Unsupported browser",
-  "unsupported.body": "This browser cannot run the calculator engine (WebAssembly). Use Safari or iOS 16.4+, Chrome or Edge 97+, or Firefox 102+.",
+  "rescue.unsupported.title": "Unsupported browser",
+  "rescue.unsupported.body": "This browser cannot run the calculator engine (WebAssembly). Use Safari or iOS 16.4+, Chrome or Edge 97+, or Firefox 102+. On iPhone and iPad, Lockdown Mode turns WebAssembly off.",
+  "rescue.integrity.title": "The engine file is damaged",
+  "rescue.integrity.body": "The calculator engine did not match its checksum, so it was not started. Reload the page; if this keeps happening, the download was changed on the way.",
+  "rescue.load-failed.title": "The engine could not be loaded",
+  "rescue.load-failed.body": "The calculator engine file could not be downloaded. Check the connection and reload the page.",
+  "rescue.heading": "Your saved data",
+  "rescue.readOnly": "This view only reads. It never changes or deletes anything stored on this device.",
+  "rescue.blocked": "This browser does not allow reading the stored data.",
+  "rescue.empty": "Nothing from this app is stored on this device.",
+  "rescue.count": {
+    "one": "{count} stored item, shown exactly as saved:",
+    "other": "{count} stored items, shown exactly as saved:"
+  },
+  "rescue.copy": "Copy raw data",
+  "rescue.save": "Save raw data",
+  "rescue.copied": "Copied.",
+  "rescue.copyFailed": "Copying is not allowed here. Use Save instead.",
+  "rescue.saved": "Saved as {file}.",
+  "rescue.saveFailed": "Saving is not allowed here. Use Copy instead.",
+  "rescue.oldApps": "The older Date Calculator and Percentage Calculator web apps do not need WebAssembly and still work in this browser.",
   "framed.body": "Portable Calculator Tool does not run inside a frame."
 }
