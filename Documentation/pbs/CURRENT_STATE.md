@@ -6,7 +6,7 @@
 - Canonical project home: local repository `D:\Claude Projects\Portable Calculator Tool` (branches `main` and `dev`), remote `origin` = public GitHub repository [CipherVaults/Portable-Calculator-Tool](https://github.com/CipherVaults/Portable-Calculator-Tool), created by the coordinating session on the owner's yes on 2026-11-18 (recorded in the Date repo's CONTINUATION_STATE, commit `2b24700`). Observed 2026-11-18: `origin/main` = `659311e` (workflow-free), `origin/dev` = `482e52d`; later local `dev` commits are pushed by the coordinator. Repository entry: [AGENTS.md](../../AGENTS.md).
 - Chosen granularity: combined small-project checkpoint. [Continuation](CONTINUATION_STATE.md) owns unfinished milestone work; the [Execution & Coding Ledger](EXECUTION_AND_CODING_LEDGER.md) owns execution evidence.
 - State owner: coordinating maintainer (Claude Code, Opus 5.5); the project owner (Ahmed) decides acceptance.
-- As of: **2026-11-19**: M2b and M2c done locally (Ledger E-08, E-09), CI pending their push. Earlier, 2026-11-18: M0 done on `dev` (Ledger E-01, E-02; CI run 44254904073 green on `482e52d`), plus the M0 review fixes and the D-slice (E-03), M1 (E-04), M2a (E-05) and the M1/M2a review fixes (E-06), verified locally, CI pending their push. App version `0.1.0` (development). No release and no Pages site.
+- As of: **2026-11-19**: M2b and M2c done locally (Ledger E-08, E-09) and their review fixes (E-10), CI pending their push. Earlier, 2026-11-18: M0 done on `dev` (Ledger E-01, E-02; CI run 44254904073 green on `482e52d`), plus the M0 review fixes and the D-slice (E-03), M1 (E-04), M2a (E-05) and the M1/M2a review fixes (E-06), verified locally, CI pending their push. App version `0.1.0` (development). No release and no Pages site.
 
 ## Accepted present
 
@@ -27,7 +27,7 @@
 
 ## Operational orientation
 
-- Current phase: **M0 done (E-01 to E-03); M1 done locally (E-04); M2a done locally (E-05: phone-first shell, theme and i18n infrastructure, store validators, desktop and IndexedDB stores, service worker with the upgrade test; WebKit/Gecko stay manual); M1/M2a review fixes done locally (E-06); phone bottom bar below 760 px done locally (E-07: ☰ Menu, quick switch, History in thumb reach); M2b (Date port) done locally (E-08); M2c (Percentage port, percent-core made total, engine panic rule) done locally (E-09); M3 next**. Live operational source: the working tree and `git log` on `dev`.
+- Current phase: **M0 done (E-01 to E-03); M1 done locally (E-04); M2a done locally (E-05: phone-first shell, theme and i18n infrastructure, store validators, desktop and IndexedDB stores, service worker with the upgrade test; WebKit/Gecko stay manual); M1/M2a review fixes done locally (E-06); phone bottom bar below 760 px done locally (E-07: ☰ Menu, quick switch, History in thumb reach); M2b (Date port) done locally (E-08); M2c (Percentage port, percent-core made total, engine panic rule) done locally (E-09); M2 review fixes done locally (E-10); M3 next**. Live operational source: the working tree and `git log` on `dev`.
 - percent-core's `<br>` labels (discount, markup, tax, tip) are never shown: the Percentage tool builds each line from the `*Text` fields as text (E-09). Engine-produced English text in the Date and Percentage tools waits for M9a; deviations in Ledger section 7.
 - Source/owner map: [SOURCE_OWNERSHIP_MAP.md](SOURCE_OWNERSHIP_MAP.md).
 - Unaccepted work pointer: [CONTINUATION_STATE.md](CONTINUATION_STATE.md).
