@@ -15,6 +15,10 @@ Find the authoritative answer to each project question without confusing permiss
 | Execution rules and onboarding | [AGENTS.md](../../AGENTS.md) | Durable convention, boundary or check change |
 | Approved design | [specs/5- PORTABLE_CALCULATOR_PLAN.md](../specs/5-%20PORTABLE_CALCULATOR_PLAN.md), Part B; the owner clarifications at its top override its body. Copied from `CipherVaults/Date-Calculator-Tool` (`Documentation/specs/`, commit `be06e59`), where it was approved | Owner-approved amendment only |
 | Milestones and backlog | [3- ROADMAP.md](../3-%20ROADMAP.md) | Milestone closed or backlog decision |
+| Handoff entry (an orientation layer over these PBS records; the records win on conflict) | [HANDOFF.md](../../HANDOFF.md), [handoff/AI_WORKING_CONTEXT.md](../handoff/AI_WORKING_CONTEXT.md) | Change of executor, account or working method |
+| Owner decisions with quotes (history, not authority) | [handoff/DECISIONS_LOG.md](../handoff/DECISIONS_LOG.md) | New owner decision |
+| UX/UI/structure roadmap | [specs/6- UX_ROADMAP.md](../specs/6-%20UX_ROADMAP.md) (design workflow output, 2026-11-19) | Adopted change to the roadmap |
+| M3b design (notes, auto-save history, countdown upgrade + roadmap items) | [specs/7- M3B_NOTES_AUTOSAVE_COUNTDOWNS.md](../specs/7-%20M3B_NOTES_AUTOSAVE_COUNTDOWNS.md) | Owner request or design change |
 | Accepted present + authority pointer | [CURRENT_STATE.md](CURRENT_STATE.md) | Acceptance or authority change |
 | Unfinished work, exact next action | [CONTINUATION_STATE.md](CONTINUATION_STATE.md) | Meaningful checkpoint |
 | Execution evidence, coding lessons | [EXECUTION_AND_CODING_LEDGER.md](EXECUTION_AND_CODING_LEDGER.md) | Meaningful check or lesson |

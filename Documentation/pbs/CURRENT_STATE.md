@@ -5,8 +5,9 @@
 - Record type: accepted present and active authority pointer (PBS v1.1).
 - Canonical project home: local repository `D:\Claude Projects\Portable Calculator Tool` (branches `main` and `dev`), remote `origin` = public GitHub repository [CipherVaults/Portable-Calculator-Tool](https://github.com/CipherVaults/Portable-Calculator-Tool), created by the coordinating session on the owner's yes on 2026-11-18 (recorded in the Date repo's CONTINUATION_STATE, commit `2b24700`). Observed 2026-11-18: `origin/main` = `659311e` (workflow-free), `origin/dev` = `482e52d`; later local `dev` commits are pushed by the coordinator. Repository entry: [AGENTS.md](../../AGENTS.md).
 - Chosen granularity: combined small-project checkpoint. [Continuation](CONTINUATION_STATE.md) owns unfinished milestone work; the [Execution & Coding Ledger](EXECUTION_AND_CODING_LEDGER.md) owns execution evidence.
-- State owner: coordinating maintainer (Claude Code, Opus 5.5); the project owner (Ahmed) decides acceptance.
-- As of: **2026-11-19**: M2b and M2c done locally (Ledger E-08, E-09) and their review fixes (E-10), CI pending their push. Earlier, 2026-11-18: M0 done on `dev` (Ledger E-01, E-02; CI run 44254904073 green on `482e52d`), plus the M0 review fixes and the D-slice (E-03), M1 (E-04), M2a (E-05) and the M1/M2a review fixes (E-06), verified locally, CI pending their push. App version `0.1.0` (development). No release and no Pages site.
+- State owner: coordinating maintainer (Claude Code, Opus 5.5) until the handoff is received. From receipt, **the executor on Ahmed Emara's account** (CipherVaults partner) owns integration and these records ([HANDOFF.md](../../HANDOFF.md) §3a). The project owners are the CipherVaults partners **Mohamed Sayed and Ahmed Emara**. Both have full authority, so an explicit yes from either partner satisfies any gate (confirmed by Ahmed on 2026-11-19). The sessions so far were driven by Ahmed Emara using Mohamed Sayed's Claude account; the handoff moves the work to Ahmed's own account.
+- **Handoff (2026-11-19): prepared, not yet received.** [HANDOFF.md](../../HANDOFF.md) is an entry layer *on top of* these PBS records. Where they differ, these records win.
+- As of: **2026-11-19**: M2b and M2c done locally (Ledger E-08, E-09) and their review fixes (E-10), pushed; CI green on `e97b1a6` (run 44501883562). Earlier, 2026-11-18: M0 done on `dev` (Ledger E-01, E-02; CI run 44254904073 green on `482e52d`), plus the M0 review fixes and the D-slice (E-03), M1 (E-04), M2a (E-05) and the M1/M2a review fixes (E-06), verified locally, CI pending their push. App version `0.1.0` (development). No release and no Pages site.
 
 ## Accepted present
 
@@ -23,7 +24,14 @@
   - the web app is phone-first.
 - Decisions approved with the plan: identifier `com.portablecalculator.tool`; `libm` for graphing; `serde_json` allowed in `pcalc-api`; desktop engine stays native; browser floor Safari/iOS 16.4+, Chrome/Edge 97+, Firefox 102+; IndexedDB for web history; the workflow-free first `main` commit.
 - Repository creation, the `origin` remote and pushing `main` (workflow-free) and `dev`: done on the owner's yes, 2026-11-18.
-- **Still gated on an explicit owner yes:** enabling Pages, merging to `main`, tags and releases.
+- **Extensions of the Goal (owner requests, 2026-11-19):**
+  - the Mini Calculator (plan B5a);
+  - themes and languages (B5b/B5c);
+  - the countdown notes/colours, history notes, auto-save history and the UX roadmap, collected as milestone **M3b**: [7- M3B_NOTES_AUTOSAVE_COUNTDOWNS.md](../specs/7-%20M3B_NOTES_AUTOSAVE_COUNTDOWNS.md) and [6- UX_ROADMAP.md](../specs/6-%20UX_ROADMAP.md).
+- **Focus (2026-11-19):** "stop working on them separately, and focus all of our efforts on the Portable Calculator tool". Date Calculator (v1.2.0) and Percentage Calculator (v2.3.0) are not changed.
+- **Standing release authority (2026-11-18):** "don't wait for my approval to release, I already grant it to you if you tested it and it's good". Merging `dev` → `main`, tags and releases are allowed for work that passed every check and was verified; never for failing or untested work.
+- **Still gated on an explicit owner yes:** enabling Pages, any other repository setting change, creating repositories.
+- The owner decisions, with quotes, are in [DECISIONS_LOG.md](../handoff/DECISIONS_LOG.md).
 
 ## Operational orientation
 

@@ -38,7 +38,7 @@ Commits follow the owner's *Git & GitHub Rhythm* (Claude skill `git-github-rhyth
 - **Branches:** work happens on `dev`. `main` is reached only by PR from `dev`. The first `main` commit has **no `.github/workflows`**, so `main` can exist as a PR base without triggering a release.
 - **Who does what:**
   - The coordinating maintainer integrates, commits and pushes `dev`. Parallel agents edit files but do not commit.
-  - The public repository `CipherVaults/Portable-Calculator-Tool` and its `origin` remote were created on the owner's yes (2026-11-18). Enabling Pages, merging to `main`, tags and releases need the owner's explicit yes.
+  - The public repository `CipherVaults/Portable-Calculator-Tool` and its `origin` remote were created on the owner's yes (2026-11-18). Merging `dev` → `main`, tags and releases follow the owners' **standing release authority** (2026-11-18: "don't wait for my approval to release, I already grant it to you if you tested it and it's good"): allowed only for work that passed the full verification list and was verified. Enabling Pages, any other repository setting change and creating repositories need an explicit yes from a CipherVaults owner.
 - **One coherent step per commit.** Stage explicit paths, never a blanket `git add -A` while other agents are editing. Read the staged diff before committing.
 - **Message format:**
   - A plain-language subject.
@@ -51,7 +51,7 @@ Commits follow the owner's *Git & GitHub Rhythm* (Claude skill `git-github-rhyth
 ## Permission checks
 
 - Private per-device state must not be read, cleared or exported without owner authority: `%APPDATA%\com.portablecalculator.tool\*`, the old apps' `%APPDATA%\com.datecalculator.tool\*` and Percentage Calculator data, browser `localStorage`, IndexedDB and PWA caches.
-- Pushing to `main`, tags and releases is outward-facing and needs the owner's explicit yes.
+- Pushing to `main`, tags and releases is outward-facing: only under the standing release authority above, with every check passed and the result verified.
 
 ## Verification workflow
 

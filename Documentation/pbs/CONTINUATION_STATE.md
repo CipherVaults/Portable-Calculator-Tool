@@ -35,6 +35,13 @@
 
 ## Exact next permitted action
 
+**At handoff (2026-11-19):** `dev` is pushed through `e97b1a6` (M2b, M2c, E-10), so items 1, 3, 5, 8 and 10 below are done. CI is green on `e97b1a6` (run 44501883562). Everything through ledger E-10 is on GitHub. The current order is:
+- **A.** (M3's owner gate "export method" was decided by the coordinator under the standing improvement authority: a fixed `%USERPROFILE%\Downloads` path on desktop, no new plugin, plus a web Blob download with a clipboard fallback. A CipherVaults owner may override.) **Recover and finish M3** (unified history; plan B10/B11 + the iPhone ± key). Its implementation was in progress and **uncommitted** when the handoff was prepared: inspect `git status` and `git diff`, keep sound work, finish, run the full AGENTS.md list, commit, push, and add ledger E-11. Do not assume the previous session's workflow finished.
+- **B.** **M3b** per [7-](../specs/7-%20M3B_NOTES_AUTOSAVE_COUNTDOWNS.md), in its build order. The owner's requests win over [6-](../specs/6-%20UX_ROADMAP.md) where they differ.
+- **C.** **M5a onward** per the ROADMAP. Ask the owner to enable Pages before M10.
+
+The numbered list below is the historical sequence:
+
 1. Coordinator: push `dev` (the E-03 and M1 commits) and confirm CI is green, including the safety-eval step, the 200k random diff in web-build and browser-boot in windows-build (first run of both on GitHub). Enabling Pages stays an owner decision.
 2. Owner, when convenient: open the single file and the served site on an iPhone (Safari 16.4+) and in Firefox, the manual WebKit/Gecko half of the M1 CSP spike.
 3. Coordinator: push `dev` with the M2a commits and confirm CI (new check-i18n and check-web steps, safety-eval B/C/D, browser-boot with the upgrade test on windows-latest).
