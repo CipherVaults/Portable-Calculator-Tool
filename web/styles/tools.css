@@ -32,9 +32,12 @@
   gap: var(--space-2);
 }
 
+/* On the page background, not on a panel: the on-bg tokens (Retro's
+   --muted is 2.65:1 on its teal page). */
 .tool-bar-text {
   margin: 0;
   flex: 1 1 12rem;
+  color: var(--on-bg-muted);
 }
 
 .tool-cards {
@@ -197,6 +200,17 @@
   box-shadow: var(--sunken);
   font-family: var(--font-mono);
   font-size: 1rem;
+}
+
+.input::placeholder {
+  color: var(--placeholder);
+  opacity: 1;
+}
+
+/* A number field keeps its digits and sign left-to-right (dir="ltr", plan
+   B5c); in a right-to-left page it still lines up with the reading start. */
+[dir="rtl"] .input[dir="ltr"] {
+  text-align: end;
 }
 
 .input:focus-visible,
@@ -583,10 +597,9 @@
   cursor: default;
 }
 
-/* Previous / next point the way the reading direction goes. */
-[dir="rtl"] .cal-nav:not(.cal-today) {
-  transform: scaleX(-1);
-}
+/* Previous / next point the way the reading direction goes: ‹ and › are
+   bidi-mirrored characters, so a right-to-left page already draws them
+   flipped (a transform here would flip them back to point inward). */
 
 .cal-weekdays,
 .cal-grid {

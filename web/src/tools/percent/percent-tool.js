@@ -26,7 +26,7 @@
 (function () {
   "use strict";
   const ns = window.PCalc;
-  const { el, show, value, withValues } = ns.dom;
+  const { el, show, ltr, ltrValue, ltrNodes, withValues } = ns.dom;
   const KEYS = Object.freeze(["change", "percent", "what", "discount", "base", "markup", "tax", "tip"]);
   const COPY_FEEDBACK_MS = 1200;
   const TIP_PRESETS = Object.freeze(["10", "15", "18", "20"]);
@@ -130,13 +130,17 @@
 
   // ---- result, formula, live ---------------------------------------------------
 
-  // Lines are [text] (engine text, shown as is) or [key, params] (catalog
-  // text whose params are engine number texts, isolated as values).
-  function lineNodes(line) {
-    if (typeof line === "string") return [document.createTextNode(line)];
+  // Lines are a string (engine English, shown as is in one left-to-right
+  // run) or [key, params] (catalog text whose params are numbers and
+  // engine number texts, each kept left-to-right as a value; plan B5c).
+  function lineText(line) {
+    if (typeof line === "string") return ltr(line);
     const params = {};
-    for (const [k, v] of Object.entries(line[1] || {})) params[k] = value(v);
-    return withValues(m.t(line[0], params));
+    for (const [k, v] of Object.entries(line[1] || {})) params[k] = ltrValue(v);
+    return m.t(line[0], params);
+  }
+  function lineNodes(line) {
+    return typeof line === "string" ? ltrNodes(line) : withValues(lineText(line));
   }
 
   function setResult(key, lines) {
@@ -158,7 +162,7 @@
   function defaultLines(key) {
     const base = key === "tax" ? "percent.formula.tax." + model.taxMode : "percent.formula." + key;
     const out = [];
-    for (let i = 1; i <= LINES[key]; i++) out.push(m.t(base + "." + i));
+    for (let i = 1; i <= LINES[key]; i++) out.push([base + "." + i]);
     return out;
   }
   function setFormula(key, lines) {
@@ -168,14 +172,14 @@
   function formulaError(key, note) {
     const list = byId(key + "Formula");
     if (!list) return;
-    let first = defaultLines(key)[0];
+    let first = m.t(defaultLines(key)[0][0]);
     if (key === "markup") first = m.t("percent.formula.markup.error");
     if (key === "tax") first = m.t("percent.formula.tax.extract.1");
     show(list, [el("li", {}, [first + " ", el("span", { className: "error-text", text: note })])]);
   }
   function live(key, text) {
     const n = byId(key + "Live");
-    if (n) n.textContent = text;
+    if (n) show(n, withValues(text));
   }
 
   function cardIdle(key) {
@@ -236,7 +240,7 @@
           ["percent.formula.discount.live.1", { price: fnum(price), disc: fnum(disc), final: r.finalText }],
           ["percent.formula.discount.live.2", { price: fnum(price), disc: fnum(disc), saved: r.savedText }]
         ],
-        live: m.t("percent.live.discount", v),
+        live: ["percent.live.discount", v],
         inputsText: m.t("percent.inputs.discount", { price: String(price), disc: String(disc) }),
         resultText: m.t("percent.history.discount", v),
         copyText: str(r.copyText)
@@ -260,7 +264,7 @@
           ["percent.formula.markup.live.2", { profitF: pf, cost: fnum(cost), markup: r.markupText }],
           ["percent.formula.markup.live.3", { profitF: pf, price: fnum(price), margin: r.marginText }]
         ],
-        live: m.t("percent.live.markup", v),
+        live: ["percent.live.markup", v],
         inputsText: m.t("percent.inputs.markup", { cost: String(cost), price: String(price) }),
         resultText: m.t("percent.history.markup", v),
         copyText: str(r.copyText)
@@ -277,7 +281,7 @@
       return {
         result: [["percent.result.tax." + mode + ".1", v], ["percent.result.tax." + mode + ".2", v]],
         formula,
-        live: m.t("percent.live.tax." + mode, v),
+        live: ["percent.live.tax." + mode, v],
         inputsText: m.t("percent.inputs.tax." + mode, { amount: String(amount), rate: String(rate) }),
         resultText: m.t("percent.history.tax." + mode, v),
         copyText: str(r.copyText)
@@ -292,7 +296,7 @@
           ["percent.formula.tip.live.2", { bill: fnum(bill), tipF: ftext(r.tipText), total: r.totalText }],
           ["percent.formula.tip.live.3", { people: fnum(people), totalF: ftext(r.totalText), each: r.perPersonText }]
         ],
-        live: m.t("percent.live.tip", v),
+        live: ["percent.live.tip", v],
         inputsText: m.t("percent.inputs.tip", { bill: String(bill), tip: String(tip), people: String(people) }),
         resultText: m.t("percent.history.tip", v),
         copyText: str(r.copyText)
@@ -329,7 +333,7 @@
     if (!allFinite(r, spec)) return cardOutOfRange(key);
     const view = VIEW[key](r, nums, mode);
     setFormula(key, view.formula);
-    live(key, m.t("percent.live.value", { value: view.live }));
+    live(key, m.t("percent.live.value", { value: lineText(view.live) }));
     setResult(key, view.result);
     const inputs = {};
     ["inputA", "inputB", "inputC"].forEach((name, i) => {
@@ -354,8 +358,11 @@
 
   async function calculateAndRecord(key) {
     await update(key);
-    if (m) record(key);
+    if (!m) return;
+    record(key);
+    m.say.now(() => speech(key));
   }
+  const speech = (key) => ns.announcer.resultWords(byId(key + "Result"));
 
   async function copyResult(key, button) {
     const last = m && m.last[key];
@@ -394,10 +401,14 @@
     return update(key);
   }
 
+  // A phone (coarse pointer) keeps focus on Clear all: focusing a field
+  // would raise the on-screen keyboard and hide the bottom bar.
   function clearAll() {
     const done = Promise.all(KEYS.map((k) => resetCard(k)));
-    const first = firstFocus();
-    if (first) first.focus();
+    const coarse = typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
+    const first = coarse ? byId("percentClearAllBtn") : firstFocus();
+    if (first) first.focus({ preventScroll: coarse });
+    m.say.say(m.t("tool.cleared"));
     return done;
   }
 
@@ -459,10 +470,13 @@
 
   // ---- building ---------------------------------------------------------------------
 
+  // A text field with a numeric keypad, not type="number": Chromium drops
+  // Arabic-Indic digits typed into a number field before .value sees them,
+  // and B5c accepts both digit systems everywhere (sanitize() normalises
+  // them). Numbers stay left-to-right in a right-to-left page (dir="ltr").
   function numberInput(id, example) {
-    const attrs = { id, type: "number", step: id === "tipPeople" ? "1" : "any", autocomplete: "off", enterkeyhint: "done" };
-    if (id === "tipPeople") attrs.min = "1";
-    else attrs.placeholder = m.t("percent.example", { value: example });
+    const attrs = { id, type: "text", inputmode: id === "tipPeople" ? "numeric" : "decimal", dir: "ltr", autocomplete: "off", spellcheck: "false", enterkeyhint: "done" };
+    if (id !== "tipPeople") attrs.placeholder = m.t("percent.example", { value: example });
     return el("input", { className: "input", attrs });
   }
 
@@ -502,7 +516,7 @@
     inputs.push(field(fields[0][0], fields[0][2]), el("div", { className: "swap-row" }, [swapBtn]), field(fields[1][0], fields[1][2]));
     if (key === "tip") {
       const presets = TIP_PRESETS.map((p) => {
-        const b = el("button", { className: "button chip-button", text: t("percent.tip.preset", { value: p }), attrs: { type: "button", id: "tipPreset-" + p, "aria-pressed": "false" } });
+        const b = el("button", { className: "button chip-button", text: t("percent.tip.preset", { value: ns.format.formatNumber(p, m.ctx.lang, { digits: m.ctx.digits, grouping: "none" }) }), attrs: { type: "button", id: "tipPreset-" + p, "aria-pressed": "false" } });
         b.addEventListener("click", () => {
           setField("tipPercent", p);
           update("tip");
@@ -511,7 +525,8 @@
       });
       inputs.push(el("div", { className: "chip-row", attrs: { role: "group", "aria-label": t("percent.tip.presets") } }, presets), field(fields[2][0], fields[2][2]));
     }
-    inputs.push(actionButtons(key), el("div", { className: "result", attrs: { id: key + "Result", role: "status", "aria-live": "polite" } }, [el("span", { className: "result-prefix", text: "=" }), "—"]));
+    // Not a live region (it changes per keystroke): percentResultLive speaks it.
+    inputs.push(actionButtons(key), el("div", { className: "result", attrs: { id: key + "Result" } }, [el("span", { className: "result-prefix", text: "=" }), "—"]));
     const formula = el("div", { className: "formula" }, [
       el("p", { className: "formula-title", text: t("percent.formula") }),
       el("ul", { className: "trace formula-lines", attrs: { id: key + "Formula", "aria-label": t("percent.formula.label", { title: t("percent.card." + key) }) } }),
@@ -528,7 +543,11 @@
       for (const [id] of CARDS[key].fields) {
         const n = byId(id);
         if (!n) continue;
-        n.addEventListener("input", () => update(key));
+        n.addEventListener("input", () => {
+          update(key);
+          // Spoken once typing pauses, never per keystroke.
+          m.say.soon(() => speech(key));
+        });
         n.addEventListener("paste", (e) => onPaste(e, n));
         n.addEventListener("keydown", (e) => {
           if (e.key === "Enter") calculateAndRecord(key);
@@ -553,8 +572,9 @@
     leave();
     const t = ctx.t;
     const liveRegion = el("p", { className: "sr-only", attrs: { id: "percentLayoutLive", role: "status", "aria-live": "polite", "aria-atomic": "true" } });
+    const resultLive = el("p", { className: "sr-only", attrs: { id: "percentResultLive", role: "status", "aria-live": "polite", "aria-atomic": "true" } });
     const container = el("div", { className: "tool-cards", attrs: { id: "percentCards" } });
-    m = { ctx, t, seq: Object.fromEntries(KEYS.map((k) => [k, 0])), last: {} };
+    m = { ctx, t, seq: Object.fromEntries(KEYS.map((k) => [k, 0])), last: {}, say: ns.announcer.create(resultLive) };
     m.layout = ns.cardLayout.create({
       container,
       keys: KEYS.slice(),
@@ -572,6 +592,7 @@
       el("div", { className: "tool-bar" }, [el("p", { className: "hint tool-bar-text", text: t("percent.toolHint") }), clearAllBtn]),
       el("p", { className: "sr-only", text: t("layout.moveHint"), attrs: { id: "percentCardMoveHint" } }),
       liveRegion,
+      resultLive,
       container
     ]);
     m.root = root;
@@ -595,9 +616,11 @@
     return ctx.saveSettings();
   }
 
-  // Leaving the route (or re-rendering it): drop the document listeners.
+  // Leaving the route (or re-rendering it): drop the document listeners and
+  // a pending announcement.
   function leave() {
     if (!m) return;
+    m.say.cancel();
     m.layout.destroy();
     m = null;
   }

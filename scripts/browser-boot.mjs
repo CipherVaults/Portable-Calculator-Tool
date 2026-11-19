@@ -81,9 +81,13 @@
 //              days (start, then end), arrow keys with one tab stop, the
 //              Move menu from a tap, a real mouse drag of a card, every
 //              card collapsed, the layout and the countdown restored after
-//              a reload, Settings > Reset, the Countdowns pane ticking,
-//              the Egypt preset (Fri/Sat, Hijri offset), all three themes
-//              and both pseudo-locales; each case is a layout check (and a
+//              a reload, Settings > Reset, the Countdowns pane ticking and
+//              its Open (the card scrolled into view, its title focused),
+//              two tabs editing the countdown list at once, the Egypt
+//              preset (Fri/Sat, Hijri offset), all three themes (the tool
+//              hint and placeholders at AA as rendered) and both
+//              pseudo-locales (ar-XB: engine English and number fields
+//              left-to-right, calendar arrows mirrored once); each case is a layout check (and a
 //              screenshot with --shots). --date-only runs just this group
 //   percent    the Percentage tool at 390 px (and 360, 440, 1280): real taps
 //              and typing on Discount (two text lines, no <br>, no "<"),
@@ -91,7 +95,10 @@
 //              Percentage Calculator v2.3.0 shows it, a tip preset, the
 //              tax mode and a swap by tap, the Move menu, every card
 //              collapsed, a reload restoring the layout, Settings > Reset,
-//              all three themes and both pseudo-locales; each case is a
+//              results spoken once (on Enter, after a typing pause),
+//              Arabic-Indic digits typed, all three themes (contrast as
+//              rendered) and both pseudo-locales (ar-XB: "-200" and
+//              "175.00% decrease" keep their order); each case is a
 //              layout check (and a screenshot with --shots).
 //              --percent-only runs just this group
 //   upgrade    build N+1 (a copy of web/ with one changed byte, built into
@@ -1004,6 +1011,21 @@ async function layoutChecks(edgePath, url, shots) {
 const PUT = (id, value) => `(() => { const n = document.getElementById(${JSON.stringify(id)}); n.value = ${JSON.stringify(value)};
   n.dispatchEvent(new Event("input", { bubbles: true })); n.dispatchEvent(new Event("change", { bubbles: true })); return true; })()`;
 const TEXT = (id) => `(document.getElementById(${JSON.stringify(id)}) || { textContent: null }).textContent`;
+// Rendered WCAG contrast of the tool hint above the cards (on the page
+// background) and of a field's placeholder (on the field), in this theme.
+const CONTRAST = (fieldId) => `(() => {
+  const lum = (c) => { const v = c.match(/[\\d.]+/g).map(Number).slice(0, 3).map((x) => { x /= 255; return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); });
+    return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]; };
+  const ratio = (a, b) => { const x = lum(a); const y = lum(b); return Math.round(((Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05)) * 100) / 100; };
+  const bgOf = (n) => { for (; n; n = n.parentElement) { const c = getComputedStyle(n).backgroundColor; if (c && c !== "transparent" && !/rgba\\([^)]*,\\s*0\\)$/.test(c)) return c; } return "rgb(255, 255, 255)"; };
+  const hint = document.querySelector(".tool-bar-text");
+  const field = document.getElementById(${JSON.stringify(fieldId)});
+  return { hint: ratio(getComputedStyle(hint).color, bgOf(hint)), placeholder: ratio(getComputedStyle(field, "::placeholder").color, bgOf(field)) };
+})()`;
+// Where a substring of a text node sits on screen (its first character's left edge).
+const LEFT_OF = (selector, needle, last = false) => `(() => { const n = document.querySelector(${JSON.stringify(selector)}); if (!n) return null;
+  const t = n.firstChild; const at = ${last ? "t.textContent.lastIndexOf" : "t.textContent.indexOf"}(${JSON.stringify(needle)}); if (at < 0) return null;
+  const r = document.createRange(); r.setStart(t, at); r.setEnd(t, at + 1); return r.getBoundingClientRect().left; })()`;
 const ORDER = `[...document.getElementById("dateCards").children].map((c) => c.dataset.card).join(",")`;
 const CARDS = ["between", "add", "business", "age", "info", "countdown"];
 
@@ -1119,7 +1141,38 @@ async function dateChecks(edgePath, url, shots) {
     const chip = await tab.evaluate(`document.querySelector(".cd-row .cd-phase").textContent`);
     expect("date.pane-countdowns-tick", c1 !== c2 && /restored|counting down/.test(chip), `${c1} -> ${c2} chip=${chip}`);
     await record("390.pane-countdowns");
-    await tab.key("Escape");
+    // Open: the sheet closes and the Countdown card (the last of six, about
+    // five screens down) is scrolled under the top bar with its title focused.
+    await tab.tap(".cd-row .button-row button");
+    await waitFor(tab, `document.activeElement && document.activeElement.id === "card-countdown-title"`, 2000);
+    await wait(150);
+    const opened = await json(tab, `(() => { const r = document.getElementById("card-countdown").getBoundingClientRect(); const bar = document.getElementById("topbar").getBoundingClientRect();
+      return { focus: document.activeElement.id, top: Math.round(r.top), barBottom: Math.round(bar.bottom), vh: innerHeight, paneHidden: document.getElementById("pane").hidden, y: Math.round(scrollY),
+        label: document.getElementById("cdLabel").value }; })()`);
+    expect("date.pane-open-shows-card", opened.focus === "card-countdown-title" && opened.paneHidden && opened.top >= opened.barBottom - 1 && opened.top < opened.vh / 2 && opened.y > 0 && opened.label === "Launch", JSON.stringify(opened));
+    await record("390.after-open", phoneBar);
+
+    // Two tabs: A has focus in its label while B adds a countdown; A's next
+    // label commit must not drop B's countdown, and B's list follows A.
+    {
+      const { tab: other } = await openPage(edge, url + "#/date", { keepOpen: true });
+      await other.viewport(390, 844);
+      await waitFor(other, `document.getElementById("cdSelect") && document.getElementById("cdSelect").children.length >= 2`);
+      await tab.evaluate(`document.getElementById("cdLabel").focus(); true`);
+      await other.evaluate(`document.getElementById("countdownClearBtn").click(); true`);
+      await other.evaluate(PUT("cdLabel", "FromTabB"));
+      await other.evaluate(PUT("cdTarget", "2031-02-02"));
+      const seen = await waitFor(tab, `window.PCalc.countdowns.list().some((x) => x.label === "FromTabB")`, 3000);
+      await tab.evaluate(PUT("cdLabel", "Launch!"));
+      const both = await waitFor(tab, `(async () => { const d = JSON.parse(await (${IDB_GET("countdowns")})); const l = d.items.map((x) => x.label); return l.includes("Launch!") && l.includes("FromTabB"); })()`, 3000);
+      const followed = await waitFor(other, `window.PCalc.countdowns.list().some((x) => x.label === "Launch!")`, 3000);
+      const stored = await json(tab, `(async () => JSON.parse(await (${IDB_GET("countdowns")})).items.map((x) => x.label).sort().join(","))()`);
+      const kept = await tab.evaluate(`document.activeElement.id + ":" + document.getElementById("cdLabel").value`);
+      expect("date.two-tabs-keep-both-countdowns", Boolean(seen) && Boolean(both) && Boolean(followed) && kept === "cdLabel:Launch!", JSON.stringify({ seen, both, followed, stored, kept }));
+      expect("date.two-tabs-no-console-errors", errorCount(other.logs) === 0, describeLogs(other.logs));
+      await other.close();
+    }
+    await tab.evaluate(`document.activeElement.blur(); true`);
 
     // Settings: the Date sections, Egypt (Fri/Sat and the Hijri offset).
     await goRoute(tab, "settings");
@@ -1151,6 +1204,8 @@ async function dateChecks(edgePath, url, shots) {
       await goRoute(tab, "date");
       await scrollTo("#bizCalGrid");
       await record(`390.${theme}-calendar`, phoneBar);
+      const c = await json(tab, CONTRAST("addDays"));
+      expect(`date.contrast.${theme}-hint-and-placeholder`, c.hint >= 4.5 && c.placeholder >= 4.5, JSON.stringify(c));
     }
     for (const pseudo of ["en-XA", "ar-XB"]) {
       await pickPseudo(tab, pseudo);
@@ -1162,6 +1217,23 @@ async function dateChecks(edgePath, url, shots) {
       await scrollTo("#card-countdown");
       await record(`390.${pseudo}-countdown`, phoneBar);
     }
+    // ar-XB is still on: engine English and number fields keep their
+    // left-to-right order; the calendar arrows are mirrored by bidi alone.
+    await tab.evaluate(`document.getElementById("addModeSubtractBtn").click(); true`);
+    for (const [id, v] of [["addStart", "2026-11-19"], ["addYears", ""], ["addMonths", ""], ["addWeeks", ""], ["addDays", "5"]]) await tab.evaluate(PUT(id, v));
+    await waitFor(tab, `${TEXT("addLive")}.includes("2026-11-14")`);
+    await scrollTo("#card-add");
+    const rtl = await json(tab, `(() => { const dir = (sel) => { const n = document.querySelector(sel); return n ? getComputedStyle(n).direction : null; };
+      const prev = document.getElementById("bizCalPrevBtn").getBoundingClientRect(); const next = document.getElementById("bizCalNextBtn").getBoundingClientRect();
+      return { page: document.documentElement.dir, main: dir("#addResult .result-main bdi"), expr: dir("#addResult .result-sub bdi.ltr"), trace: dir("#addTrace li bdi"), live: dir("#addLive bdi"),
+        amount: dir("#addDays"), navTransform: getComputedStyle(document.getElementById("bizCalPrevBtn")).transform, prevOnRight: prev.left > next.left,
+        exprText: (document.querySelector("#addResult .result-sub bdi.ltr") || {}).textContent }; })()`);
+    const first = await tab.evaluate(LEFT_OF("#addResult .result-sub bdi.ltr", "2026-11-19"));
+    const lastDate = await tab.evaluate(LEFT_OF("#addResult .result-sub bdi.ltr", "2026-11-14", true));
+    expect("date.ar-XB-ltr-runs", rtl.page === "rtl" && [rtl.main, rtl.expr, rtl.trace, rtl.live, rtl.amount].every((d) => d === "ltr") && first !== null && lastDate !== null && first < lastDate,
+      JSON.stringify({ ...rtl, first, lastDate }));
+    expect("date.ar-XB-calendar-arrows-mirrored-once", rtl.navTransform === "none" && rtl.prevOnRight, JSON.stringify(rtl));
+    await record("390.ar-XB-add", phoneBar);
     await pickPseudo(tab, "off");
     // Wider: two columns inside a card at 1280 px (drawer pinned).
     await tab.viewport(1280, 900, false);
@@ -1233,6 +1305,30 @@ async function percentChecks(edgePath, url, shots) {
     await waitFor(tab, `window.PCalc.history.pending().length === ${before + 1}`);
     const entry = await json(tab, `window.PCalc.history.pending().pop()`);
     expect("percent.enter-records", before === 0 && entry.tool === "percent" && entry.calculator === "discount" && entry.copyText === "Final: 63.99\nSaved: 16.00", JSON.stringify({ before, entry }));
+    // Enter spoke the result in the tool's one polite region; the result boxes are not live.
+    const spoken = await json(tab, `({ region: document.getElementById("percentResultLive").textContent.trim(), live: document.querySelectorAll("#percentTool .result[aria-live], #percentTool .result[role]").length })`);
+    expect("percent.enter-speaks-once", spoken.region === "Final: 63.99. Saved: 16.00" && spoken.live === 0, JSON.stringify(spoken));
+    // Typing 150 then 180 key by key: nothing is spoken until the typing pauses.
+    await scrollTo("#card-change");
+    const quiet = await tab.evaluate(`document.getElementById("percentResultLive").textContent`);
+    await tab.tap("#changeOrig");
+    for (const k of ["1", "5", "0"]) await tab.type(k);
+    await tab.tap("#changeNew");
+    for (const k of ["1", "8", "0"]) await tab.type(k);
+    const typing = await tab.evaluate(`document.getElementById("percentResultLive").textContent`);
+    await waitFor(tab, `document.getElementById("percentResultLive").textContent === "20.00% increase"`, 2000);
+    const said = await tab.evaluate(`document.getElementById("percentResultLive").textContent`);
+    expect("percent.typing-speaks-after-pause", typing === quiet && said === "20.00% increase", JSON.stringify({ quiet, typing, said }));
+    // Arabic-Indic digits typed into a field (as an Arabic keyboard sends them) compute.
+    await scrollTo("#card-percent");
+    await tab.tap("#isWhatX");
+    await tab.type("٥٠");
+    await tab.tap("#isWhatY");
+    await tab.type("٢٠٠");
+    await waitFor(tab, `${TEXT("percentLive")} === "→ 25.00%"`);
+    const typedArabic = await json(tab, `({ x: document.getElementById("isWhatX").value, y: document.getElementById("isWhatY").value, live: ${TEXT("percentLive")}, lines: ${P_LINES("percent")} })`);
+    expect("percent.arabic-indic-digits-typed", typedArabic.x === "٥٠" && typedArabic.y === "٢٠٠" && typedArabic.live === "→ 25.00%" && typedArabic.lines.join() === "25.00%", JSON.stringify(typedArabic));
+    await tab.evaluate(`document.activeElement.blur(); true`);
     // Every other card filled; each live result as Percentage Calculator v2.3.0 shows it.
     for (const [id, v] of [["changeOrig", "150"], ["changeNew", "180"], ["isWhatX", "50"], ["isWhatY", "200"], ["whatX", "20"], ["whatY", "500"],
       ["baseX", "50"], ["baseY", "25"], ["markupCost", "80"], ["markupPrice", "100"], ["taxAmount", "100"], ["taxRate", "15"], ["tipBill", "100"], ["tipPercent", "20"], ["tipPeople", "3"]]) {
@@ -1313,6 +1409,8 @@ async function percentChecks(edgePath, url, shots) {
       await goRoute(tab, "percent");
       await scrollTo("#card-tip");
       await record(`390.${theme}-tip`, phoneBar);
+      const c = await json(tab, CONTRAST("tipBill"));
+      expect(`percent.contrast.${theme}-hint-and-placeholder`, c.hint >= 4.5 && c.placeholder >= 4.5, JSON.stringify(c));
     }
     for (const pseudo of ["en-XA", "ar-XB"]) {
       await pickPseudo(tab, pseudo);
@@ -1324,6 +1422,19 @@ async function percentChecks(edgePath, url, shots) {
       await scrollTo("#card-tip");
       await record(`390.${pseudo}-tip`, phoneBar);
     }
+    // ar-XB is still on: a -200 in a field reads "-200" (a left-to-right
+    // field), and "175.00% decrease" keeps its order (a left-to-right run).
+    await tab.evaluate(PUT("changeOrig", "-200"));
+    await tab.evaluate(PUT("changeNew", "150"));
+    await waitFor(tab, `${TEXT("changeLive")}.includes("175.00% decrease")`);
+    await scrollTo("#card-change");
+    const prtl = await json(tab, `(() => { const s = getComputedStyle(document.getElementById("changeOrig")); const b = document.querySelector("#changeResult .result-main bdi");
+      return { page: document.documentElement.dir, field: s.direction, align: s.textAlign, main: b ? getComputedStyle(b).direction : null, text: b ? b.textContent : null }; })()`);
+    const num = await tab.evaluate(LEFT_OF("#changeResult .result-main bdi", "175"));
+    const word = await tab.evaluate(LEFT_OF("#changeResult .result-main bdi", "decrease"));
+    expect("percent.ar-XB-ltr-runs", prtl.page === "rtl" && prtl.field === "ltr" && prtl.main === "ltr" && prtl.text === "175.00% decrease" && num !== null && word !== null && num < word,
+      JSON.stringify({ ...prtl, num, word }));
+    await record("390.ar-XB-change", phoneBar);
     await pickPseudo(tab, "off");
     // Wider: inputs and the live formula side by side at 1280 px.
     await tab.viewport(1280, 900, false);

@@ -38,6 +38,7 @@
   --muted: #a3adc2;
   --muted-2: #8f9aaf;
   --muted-3: #6b768e;
+  --placeholder: #a3adc2;
   --on-bg: #e2e4e8;
   --on-bg-muted: #8f9aaf;
 
@@ -123,6 +124,7 @@
   --muted: #5D6475;
   --muted-2: #5D6475;
   --muted-3: #858c9b;
+  --placeholder: #5D6475;
   --on-bg: #1F2330;
   --on-bg-muted: #565d6d;
 
@@ -187,6 +189,7 @@
   --muted: #333333;
   --muted-2: #333333;
   --muted-3: #505050;
+  --placeholder: #333333;
   --on-bg: #FFFFFF;
   --on-bg-muted: #FFFFFF;
 
@@ -256,6 +259,7 @@
     --muted: GrayText;
     --muted-2: GrayText;
     --muted-3: GrayText;
+    --placeholder: GrayText;
     --on-bg: CanvasText;
     --on-bg-muted: CanvasText;
     --focus-ring: Highlight;

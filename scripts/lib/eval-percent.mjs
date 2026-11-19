@@ -11,8 +11,9 @@
 //                copyText), no markup ever interpreted from the engine's
 //                "<br>" labels, errors and out-of-range, swap, presets and
 //                people, tax mode, paste cleaning, an IPC race, the history
-//                hook, the session model, the layout and its Reset, and the
-//                desktop adapter
+//                hook, the session model, the layout and its Reset, the
+//                desktop adapter, results spoken once, text fields with
+//                Arabic-Indic digits and LTR runs, Clear all on a phone
 //   C.percent-*  settings.percent in the "settings" document: the layout a
 //                launch restores, and a read-only document never written
 // Each rule has a mutant in PERCENT_MUTANTS that the same test must catch.
@@ -34,6 +35,7 @@ const settle = async (app) => {
   await tick(60);
 };
 const text = (app, id) => (app.byId(id) ? app.byId(id).textContent : null);
+const attr = (n, a) => (n ? n.getAttribute(a) : null);
 // The result box's lines (main, then subs), as shown.
 const lines = (app, key) => app.byId(key + "Result").children.filter((c) => /result-(main|sub)/.test(c.className)).map((c) => c.textContent);
 const formula = (app, key) => app.byId(key + "Formula").children.map((li) => li.textContent);
@@ -436,6 +438,91 @@ export function percentBTests(web, engine) {
       const shown = text(app, "tipLive") === "→ Each: 40.00 · Total: 120.00" && lines(app, "discount").join("|") === "Final: 63.99|Saved: 16.00";
       const ok = app.html.getAttribute("data-store") === "file" && all && shown;
       return { ok, detail: `store=${app.html.getAttribute("data-store")} ops=${[...ops].join(",")} shown=${shown}` };
+    },
+
+    async "percent-results-spoken-once"(src) {
+      // Plan B16: no result box is a live region (150 then 180 typed into
+      // Percentage Change showed six answers); the tool's one polite region
+      // speaks the result once typing pauses, at once on Enter, never on
+      // mount.
+      const app = await boot({ overrides: src });
+      await settle(app);
+      const region = app.byId("percentResultLive");
+      const boxes = KEYS.every((k) => !app.byId(k + "Result").hasAttribute("role") && !app.byId(k + "Result").hasAttribute("aria-live"));
+      const mount = attr(region, "aria-live") === "polite" && region.textContent === "";
+      for (const v of ["1", "15", "150"]) input(app, "changeOrig", v);
+      for (const v of ["1", "18", "180"]) {
+        input(app, "changeNew", v);
+        await tick(40);
+      }
+      await until(() => text(app, "changeLive") === "→ 20.00% increase", 2000);
+      const whileTyping = region.textContent === "";
+      await until(() => region.textContent !== "", 2000);
+      const paused = region.textContent === "20.00% increase";
+      app.byId("changeNew").focus();
+      app.document.press("Enter");
+      await until(() => region.textContent !== "20.00% increase", 400);
+      const enter = region.textContent === "20.00% increase ";
+      const ok = boxes && mount && whileTyping && paused && enter;
+      return { ok, detail: JSON.stringify({ boxes, mount, whileTyping, paused, enter, region: region.textContent }) };
+    },
+
+    async "percent-ltr-and-digits"(src) {
+      // B5c: the fields are text fields with a numeric keypad (a number
+      // field drops typed Arabic-Indic digits in Chromium), dir="ltr" so
+      // "-200" never shows as "200-"; Arabic-Indic digits compute; engine
+      // text is a <bdi dir="ltr"> run and formula numbers are LTR values;
+      // the tip presets follow Settings > Digits.
+      const app = await boot({ overrides: src });
+      await settle(app);
+      const ids = ["changeOrig", "changeNew", "isWhatX", "isWhatY", "whatX", "whatY", "discountPrice", "discountPercent", "baseX", "baseY", "markupCost", "markupPrice", "taxAmount", "taxRate", "tipBill", "tipPercent", "tipPeople"];
+      const fields = ids.every((id) => {
+        const n = app.byId(id);
+        const mode = id === "tipPeople" ? "numeric" : "decimal";
+        return attr(n, "type") === "text" && attr(n, "inputmode") === mode && attr(n, "dir") === "ltr" && attr(n, "enterkeyhint") === "done";
+      });
+      input(app, "isWhatX", "٥٠");
+      input(app, "isWhatY", "٢٠٠");
+      input(app, "changeOrig", "-200");
+      input(app, "changeNew", "150");
+      await until(() => text(app, "percentLive") === "→ 25.00%" && text(app, "changeLive") !== "→ —", 2000);
+      const ltrRun = (n) => Boolean(n) && n.localName === "bdi" && attr(n, "dir") === "ltr";
+      const arabic = lines(app, "percent").join() === "25.00%";
+      const main = ltrRun(app.byId("changeResult").querySelector(".result-main").children[0]);
+      const formulaNums = app.byId("changeFormula").querySelectorAll("bdi").length >= 2 && Array.from(app.byId("changeFormula").querySelectorAll("bdi")).every((b) => ltrRun(b) && b.className === "num");
+      const liveRun = app.byId("changeLive").children.some(ltrRun);
+      app.window.location.assignHash("#/settings");
+      await until(() => app.byId("digitsSelect"), 2000);
+      const digits = app.byId("digitsSelect");
+      digits.value = "arabic-indic";
+      digits.dispatchEvent(new app.window.Event("change"));
+      await tick(60);
+      app.window.location.assignHash("#/percent");
+      await until(() => app.byId("tipPreset-10"), 2000);
+      await settle(app);
+      const presets = text(app, "tipPreset-10") === "١٠%" && text(app, "tipPreset-18") === "١٨%";
+      const got = { fields, arabic, main, formulaNums, liveRun, presets };
+      return { ok: Object.values(got).every(Boolean), detail: JSON.stringify(got) };
+    },
+
+    async "percent-clear-all-phone"(src) {
+      // Clear all on a phone (coarse pointer) keeps focus on the button (a
+      // focused number field would raise the keypad and hide the bottom
+      // bar); a mouse moves focus to the first field. Both say it politely.
+      const phone = await boot({ overrides: src, coarse: true });
+      await settle(phone);
+      input(phone, "changeOrig", "150");
+      phone.byId("percentClearAllBtn").focus();
+      phone.byId("percentClearAllBtn").click();
+      await tick(60);
+      const kept = phone.document.activeElement === phone.byId("percentClearAllBtn") && phone.byId("changeOrig").value === "" &&
+        phone.byId("percentResultLive").textContent === "All cards cleared.";
+      const desk = await boot({ overrides: src });
+      await settle(desk);
+      desk.byId("percentClearAllBtn").click();
+      await tick(60);
+      const moved = desk.document.activeElement === desk.byId("changeOrig") && desk.byId("percentResultLive").textContent === "All cards cleared.";
+      return { ok: kept && moved, detail: JSON.stringify({ kept, moved }) };
     }
   };
 }
@@ -533,7 +620,7 @@ export const PERCENT_MUTANTS = [
   ["B", "percent-paste", TOOL, "    const trimmed = ns.format.normalizeDigits(raw).trim();", "    const trimmed = raw.trim();"],
   ["B", "percent-paste", TOOL, "    event.preventDefault();\n    const cleaned = sanitize(trimmed);", "    const cleaned = sanitize(trimmed);"],
   ["B", "percent-ipc-race", TOOL, "    if (!m || ticket !== m.seq[key]) return;", "    if (!m) return;\n    void ticket;"],
-  ["B", "percent-history-hook", TOOL, "    await update(key);\n    if (m) record(key);", "    await update(key);"],
+  ["B", "percent-history-hook", TOOL, "    await update(key);\n    if (!m) return;\n    record(key);", "    await update(key);\n    if (!m) return;"],
   ["B", "percent-history-hook", TOOL, "    if (!ok || !m) return false;\n    const label", "    record(key);\n    if (!ok || !m) return false;\n    const label"],
   ["B", "percent-history-hook", TOOL, "    if (spec.fields[i]) inputs[name] = sanitize(raw(spec.fields[i][0]));", "    if (spec.fields[i] && i < 2) inputs[name] = sanitize(raw(spec.fields[i][0]));"],
   ["B", "percent-session-model", TOOL, "    if (id && FIELD_IDS.includes(id)) model.fields[id] = target.value;", "    void id;"],
@@ -541,6 +628,18 @@ export const PERCENT_MUTANTS = [
   ["B", "percent-layout", TOOL, "    return saveLayout(ctx, { cardOrder: KEYS.slice(), collapsedCards: [] }, { reset: true });", "    return saveLayout(ctx, { cardOrder: KEYS.slice(), collapsedCards: ctx.settings.percent.collapsedCards }, { reset: true });"],
   ["B", "percent-layout", TOOL, "      await resetLayout(ctx);\n", ""],
   ["B", "percent-desktop-adapter", TOOL, "      const r = JSON.parse(await m.ctx.platform.engine(op, JSON.stringify(req)));", "      const r = JSON.parse(await ns.platforms.web.engine(op, JSON.stringify(req)));"],
+  ["B", "percent-results-spoken-once", TOOL, 'el("div", { className: "result", attrs: { id: key + "Result" } }', 'el("div", { className: "result", attrs: { id: key + "Result", role: "status", "aria-live": "polite" } }'],
+  ["B", "percent-results-spoken-once", TOOL, "          m.say.soon(() => speech(key));", "          m.say.now(() => speech(key));"],
+  ["B", "percent-results-spoken-once", TOOL, "    record(key);\n    m.say.now(() => speech(key));", "    record(key);"],
+  ["B", "percent-ltr-and-digits", TOOL, 'const attrs = { id, type: "text", ', 'const attrs = { id, type: "number", '],
+  ["B", "percent-ltr-and-digits", TOOL, 'inputmode: id === "tipPeople" ? "numeric" : "decimal", dir: "ltr", ', 'inputmode: id === "tipPeople" ? "numeric" : "decimal", '],
+  ["B", "percent-ltr-and-digits", TOOL, "    return typeof line === \"string\" ? ltrNodes(line) : withValues(lineText(line));", "    return typeof line === \"string\" ? [document.createTextNode(line)] : withValues(lineText(line));"],
+  ["B", "percent-ltr-and-digits", TOOL, "    for (const [k, v] of Object.entries(line[1] || {})) params[k] = ltrValue(v);", "    for (const [k, v] of Object.entries(line[1] || {})) params[k] = ltrValue(v).replace(/[\\uE004\\uE005]/g, \"\");"],
+  ["B", "percent-ltr-and-digits", TOOL, "    if (typeof line === \"string\") return ltr(line);", "    if (typeof line === \"string\") return line;"],
+  ["B", "percent-ltr-and-digits", TOOL, '{ value: ns.format.formatNumber(p, m.ctx.lang, { digits: m.ctx.digits, grouping: "none" }) }', "{ value: p }"],
+  ["B", "percent-ltr-and-digits", TOOL, "    const trimmed = ns.format.normalizeDigits(raw).trim();", "    const trimmed = raw.trim();"],
+  ["B", "percent-clear-all-phone", TOOL, 'const first = coarse ? byId("percentClearAllBtn") : firstFocus();', "const first = firstFocus();"],
+  ["B", "percent-clear-all-phone", TOOL, '    m.say.say(m.t("tool.cleared"));\n', "\n"],
   ["C", "percent-layout-launch-restore", TOOL, "      state: ns.cardLayout.normalise(KEYS, ctx.settings.percent),", "      state: ns.cardLayout.normalise(KEYS, null),"],
   ["C", "percent-layout-read-only", TOOL, "      if (ctx.store.kind === \"memory\" || (o && o.readOnly)) return t(\"layout.note.session\");\n", ""]
 ];

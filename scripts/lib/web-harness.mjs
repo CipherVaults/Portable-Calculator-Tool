@@ -75,7 +75,7 @@ export function fakeTauri(engineCall, createDocStore, memoryBackend) {
 //   web          the web/ folder
 //   engine       Uint8Array of engine.wasm (required for the web adapter)
 //   origin       shared origin (createOrigin()), for multi-window tests
-//   width, light, languages, href, noIndexedDB, noBroadcastChannel, noWasm
+//   width, light, coarse, languages, href, noIndexedDB, noBroadcastChannel, noWasm
 //   overrides    {rel: text} source replacements (mutants)
 //   tauri        a fakeTauri(...) object: boot under the desktop adapter
 //   seed(win)    called before the scripts run (e.g. localStorage values)

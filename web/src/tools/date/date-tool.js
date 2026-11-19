@@ -21,7 +21,7 @@
 (function () {
   "use strict";
   const ns = window.PCalc;
-  const { el, show, flag, value, withValues } = ns.dom;
+  const { el, show, flag, value, ltr, ltrNodes, withValues } = ns.dom;
   const KEYS = Object.freeze(["between", "add", "business", "age", "info", "countdown"]);
   const AMOUNTS = ["addYears", "addMonths", "addWeeks", "addDays"];
   const MAX_HIT_ROWS = 25;
@@ -32,7 +32,7 @@
   const CHECKS = ["betweenIncludeEnd", "addBusiness", "bizIncludeEnd"];
 
   // The session model (see the header).
-  const model = { fields: {}, checks: {}, addMode: "add", leap: "feb28", bizPick: null, cdSelected: null, cdInitialised: false, cdForgotten: "", expandCountdown: false };
+  const model = { fields: {}, checks: {}, addMode: "add", leap: "feb28", bizPick: null, cdSelected: null, cdInitialised: false, cdForgotten: "", expandCountdown: false, revealCountdown: false };
 
   let m = null; // the mounted view, or null
 
@@ -47,6 +47,8 @@
   }
 
   const str = (v) => (typeof v === "string" ? v : "");
+  // Engine English kept left-to-right inside right-to-left text (B5c).
+  const eng = (v) => (str(v) ? ltr(str(v)) : "");
   const isIso = (v) => ns.miniCal.parseIso(v) !== null;
   const pairKey = (d, t) => d + "|" + t;
 
@@ -121,7 +123,7 @@
   }
 
   function amountInput(id) {
-    return el("input", { className: "input", attrs: { id, type: "text", inputmode: "numeric", placeholder: "0", autocomplete: "off", spellcheck: "false", maxlength: "16" } });
+    return el("input", { className: "input", attrs: { id, type: "text", inputmode: "numeric", dir: "ltr", placeholder: "0", autocomplete: "off", spellcheck: "false", maxlength: "16" } });
   }
 
   function checkRow(id, text, describedBy) {
@@ -154,9 +156,12 @@
     return el("div", { className: "button-row" }, [calc, clear, copy]);
   }
 
+  // Not a live region: it changes on every keystroke. The tool's one polite
+  // region (dateResultLive, shell/announcer.js) speaks it.
   function resultBox(key) {
-    return el("div", { className: "result", attrs: { id: key + "Result", role: "status", "aria-live": "polite" } }, [el("span", { className: "result-prefix", text: "=" }), "—"]);
+    return el("div", { className: "result", attrs: { id: key + "Result" } }, [el("span", { className: "result-prefix", text: "=" }), "—"]);
   }
+  const speech = (key) => ns.announcer.resultWords(byId(key + "Result"));
 
   function formula(key, extra) {
     return el("div", { className: "formula" }, [
@@ -190,7 +195,7 @@
   function setResult(key, main, subs, warnings, extra) {
     const box = byId(key + "Result");
     if (!box) return;
-    const nodes = [el("span", { className: "result-prefix", text: "=" }), el("span", { className: "result-main", text: main })];
+    const nodes = [el("span", { className: "result-prefix", text: "=" }), el("span", { className: "result-main" }, ltrNodes(main))];
     for (const s of subs || []) if (typeof s === "string" && s) nodes.push(el("span", { className: "result-sub" }, withValues(s)));
     for (const n of extra || []) nodes.push(n);
     for (const w of warnings || []) if (w) nodes.push(el("span", { className: "result-warning", text: w }));
@@ -208,7 +213,7 @@
     const list = byId(key + "Trace");
     if (!list) return;
     const items = (Array.isArray(lines) ? lines : []).filter((l) => typeof l === "string").map((l) =>
-      l.startsWith("  ") ? el("li", { className: "trace-note", text: l.trim() }) : el("li", { text: l }));
+      l.startsWith("  ") ? el("li", { className: "trace-note" }, ltrNodes(l.trim())) : el("li", {}, ltrNodes(l)));
     if (items.length === 0) traceIdle(key);
     else show(list, items);
   }
@@ -222,7 +227,7 @@
   }
   function live(key, text) {
     const n = byId(key + "Live");
-    if (n) n.textContent = text;
+    if (n) show(n, withValues(text));
   }
   function cardIdle(key) {
     m.last[key] = null;
@@ -273,12 +278,12 @@
     if (!r) return cardError("between", errorText(res));
     const days = r.direction === "backward" ? "date.between.weekdaysBackward" : "date.between.weekdays";
     setResult("between", str(r.breakdownText), [
-      join([str(r.summaryText), str(r.weeksText)]),
+      join([eng(r.summaryText), eng(r.weeksText)]),
       join([unit("hour", r.totalHours), unit("minute", r.totalMinutes), unit("second", r.totalSeconds)]),
       m.t(days, { start: str(r.startWeekday), end: str(r.endWeekday) })
     ]);
     traceLines("between", r.traceLines);
-    live("between", m.t("date.live.value", { value: str(r.summaryText) }));
+    live("between", m.t("date.live.value", { value: eng(r.summaryText) }));
     m.last.between = {
       calculator: "between",
       inputs: { startDate, endDate, includeEndDay: String(includeEndDay) },
@@ -317,14 +322,14 @@
     if (!m || ticket !== m.seq.add) return;
     const r = res && res.ok === "true" ? res.result : null;
     if (!r) return cardError("add", errorText(res));
-    const subs = [str(r.expressionText), m.t("date.add.moved", { n: value(num(r.calendarDaysDelta)) })];
+    const subs = [eng(r.expressionText), m.t("date.add.moved", { n: value(num(r.calendarDaysDelta)) })];
     if (businessDays && typeof r.businessDayCount === "number") {
       subs.push(join([m.t("date.add.business", { n: value(num(r.businessDayCount)), weekend: unit("weekendDay", r.skippedWeekendDays), holidays: unit("holiday", r.skippedHolidays) }), calendarShort()]));
     }
     if (r.monthClamped === true) subs.push(m.t("date.add.clamped"));
     setResult("add", str(r.summaryText), subs, warnings(r));
     traceLines("add", r.traceLines);
-    live("add", m.t("date.live.value", { value: str(r.resultDate) + " (" + str(r.resultWeekday) + ")" }));
+    live("add", m.t("date.live.value", { value: eng(str(r.resultDate) + " (" + str(r.resultWeekday) + ")") }));
     const sign = operation === "subtract" ? "−" : "+";
     const parts = [["years", "y"], ["months", "m"], ["weeks", "w"], ["days", "d"]].filter(([k]) => amounts[k] !== "").map(([k, s]) => amounts[k] + s);
     m.last.add = {
@@ -354,7 +359,7 @@
     const shown = hits.slice(0, MAX_HIT_ROWS);
     show(list, shown.map((h) => {
       const name = el("bdi", { className: "hit-name", text: str(h.name), attrs: { dir: "auto" } });
-      return el("li", { className: "hit" }, [name, h.approximate === true ? el("span", { className: "approx-tag", text: m.t("date.estimated") }) : null, el("span", { className: "hit-date", text: str(h.date) })]);
+      return el("li", { className: "hit" }, [name, h.approximate === true ? el("span", { className: "approx-tag", text: m.t("date.estimated") }) : null, el("bdi", { className: "hit-date", text: str(h.date), attrs: { dir: "ltr" } })]);
     }));
     const total = typeof r.holidayDays === "number" ? r.holidayDays : hits.length;
     const rest = total - shown.length;
@@ -408,7 +413,7 @@
       join([calendarShort(), m.t(includeEndDay ? "date.biz.included" : "date.biz.notIncluded"), r.direction === "backward" ? m.t("date.biz.backward") : ""])
     ], warnings(r));
     traceLines("business", r.traceLines);
-    live("business", m.t("date.live.value", { value: str(r.summaryText) }));
+    live("business", m.t("date.live.value", { value: eng(r.summaryText) }));
     renderHits(r);
     m.last.business = {
       calculator: "business",
@@ -460,10 +465,10 @@
     setResult("age", str(r.ageText), [
       next,
       join([unit("month", r.totalMonths), unit("week", r.totalWeeks), unit("day", r.totalDays)]),
-      join([str(r.summaryText), m.t("date.age.born", { weekday: str(r.bornWeekday) }), m.t(asOfRaw ? "date.age.asOf" : "date.age.asOfToday", { date: asOfDate })])
+      join([eng(r.summaryText), m.t("date.age.born", { weekday: str(r.bornWeekday) }), m.t(asOfRaw ? "date.age.asOf" : "date.age.asOfToday", { date: asOfDate })])
     ]);
     traceLines("age", r.traceLines);
-    live("age", m.t("date.live.value", { value: str(r.ageText) }));
+    live("age", m.t("date.live.value", { value: eng(r.ageText) }));
     m.last.age = {
       calculator: "age",
       inputs: { birthDate, asOfDate: asOfRaw, leapDayRule: rule },
@@ -509,7 +514,7 @@
       ["date.info.quarter", m.t("date.info.quarterValue", { q: value(num(r.quarter)) })],
       ["date.info.leapYear", m.t(r.isLeapYear ? "date.info.leapYes" : "date.info.leapNo", { year: Number.isInteger(r.year) ? ns.clock.pad(r.year, 4) : "—" })],
       ["date.info.daysLeft", m.t("date.info.daysLeftValue", { year: value(num(r.daysRemainingInYear)), month: value(num(r.daysRemainingInMonth)) })],
-      ["date.info.relative", str(r.relativeText) || "—"]
+      ["date.info.relative", eng(r.relativeText) || "—"]
     ];
     const day = calendarDayText(grid, date);
     if (day) rows.push(["date.info.calendar", m.t("date.info.calendarValue", { day, calendar: calendarShort() })]);
@@ -518,7 +523,7 @@
     const grid2 = el("dl", { className: "info-rows" }, rows.flatMap(([k, v]) => [el("dt", { className: "info-key", text: m.t(k) }), el("dd", { className: "info-val" }, withValues(v))]));
     setResult("info", str(r.longText), [], [], [grid2]);
     traceLines("info", r.traceLines);
-    live("info", m.t("date.live.value", { value: str(r.weekday) + sep() + str(r.isoWeekText) }));
+    live("info", m.t("date.live.value", { value: eng(r.weekday) + sep() + eng(r.isoWeekText) }));
     m.last.info = { calculator: "info", inputs: { date }, inputsText: date, resultText: join([str(r.longText), str(r.isoWeekText)]), copyText: str(r.copyText) };
   }
 
@@ -604,7 +609,7 @@
     if (!note || !del) return;
     let text = ns.countdowns.note(t);
     if (!model.cdSelected && text === t("date.cd.note.saved")) text = "";
-    if (m.cdFull) text = t("date.cd.note.full", { max: ns.countdowns.MAX });
+    if (m.cdFull) text = t("date.cd.note.full", { max: num(ns.countdowns.MAX) });
     const canDelete = Boolean(model.cdSelected) && ns.countdowns.writable();
     if (!canDelete && document.activeElement === del) byId("countdownCalcBtn").focus();
     byId("cdSavedNoteText").textContent = text;
@@ -694,7 +699,7 @@
       clock.classList.toggle("is-past", r.status === "past");
     }
     traceLines("countdown", r.traceLines);
-    live("countdown", m.t("date.live.value", { value: str(r.text) }));
+    live("countdown", m.t("date.live.value", { value: eng(r.text) }));
     const item = shownItem();
     const isFinished = r.status === "past" || r.status === "now";
     const phase = item ? ns.countdowns.phaseOf(item, res) : isFinished ? "finished" : "counting";
@@ -714,7 +719,7 @@
       setResult("countdown", str(r.summaryText), [
         bizLine,
         join([unit("second", r.totalSeconds), unit("minute", r.totalMinutes), unit("hour", r.totalHours)]),
-        m.t("date.cd.target", { when: str(r.targetDate) + " " + str(r.targetTime) + " (" + str(r.targetWeekday) + ")" })
+        m.t("date.cd.target", { when: eng(str(r.targetDate) + " " + str(r.targetTime) + " (" + str(r.targetWeekday) + ")") })
       ]);
       await m.cals.cd.setView({ anchor: targetDate, rangeStart: targetDate, rangeEnd: targetDate });
       if (!m || ticket !== m.seq.countdown) return;
@@ -767,7 +772,9 @@
 
   async function calculateAndRecord(key) {
     await UPDATERS[key]();
-    if (m) record(key);
+    if (!m) return;
+    record(key);
+    m.say.now(() => speech(key));
   }
 
   async function copyResult(key, button) {
@@ -839,10 +846,14 @@
     model.checks[id] = on;
   }
 
+  // A phone (coarse pointer) keeps focus on Clear all: focusing a field
+  // would raise the on-screen keyboard and hide the bottom bar.
   function clearAll() {
     const done = Promise.all(KEYS.map((k) => resetCard(k)));
-    const first = firstFocus();
-    if (first) first.focus();
+    const coarse = typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse)").matches;
+    const first = coarse ? byId("dateClearAllBtn") : firstFocus();
+    if (first) first.focus({ preventScroll: coarse });
+    m.say.say(m.t("tool.cleared"));
     return done;
   }
 
@@ -1092,9 +1103,13 @@
     on("cdTime", ["input", "change"], () => updateCountdown({}));
     const ENTER = { between: ["betweenStart", "betweenEnd"], add: ["addStart", ...AMOUNTS], business: ["bizStart", "bizEnd"], age: ["ageBirth", "ageAsOf"], info: ["infoDate"], countdown: ["cdTarget", "cdTime"] };
     for (const [key, ids] of Object.entries(ENTER)) {
-      for (const id of ids) on(id, ["keydown"], (e) => {
-        if (e.key === "Enter") calculateAndRecord(key);
-      });
+      for (const id of ids) {
+        on(id, ["keydown"], (e) => {
+          if (e.key === "Enter") calculateAndRecord(key);
+        });
+        // Typing is spoken once it pauses, never per keystroke.
+        on(id, ["input"], () => m.say.soon(() => speech(key)));
+      }
     }
   }
 
@@ -1150,6 +1165,7 @@
     leave();
     const t = ctx.t;
     const live = el("p", { className: "sr-only", attrs: { id: "dateLayoutLive", role: "status", "aria-live": "polite", "aria-atomic": "true" } });
+    const resultLive = el("p", { className: "sr-only", attrs: { id: "dateResultLive", role: "status", "aria-live": "polite", "aria-atomic": "true" } });
     const container = el("div", { className: "tool-cards", attrs: { id: "dateCards" } });
     const settings = ctx.settings.date;
     m = {
@@ -1164,8 +1180,10 @@
       cdStatusKey: "",
       cdFull: false,
       cdFullPending: false,
+      say: ns.announcer.create(resultLive),
       cleanups: []
     };
+    m.cleanups.push(() => m.say.cancel());
     const state = ns.cardLayout.normalise(KEYS, settings);
     m.layout = ns.cardLayout.create({
       container,
@@ -1188,6 +1206,7 @@
       el("div", { className: "tool-bar" }, [el("p", { className: "hint tool-bar-text", text: t("date.toolHint") }), clearAllBtn]),
       el("p", { className: "sr-only", text: t("layout.moveHint"), attrs: { id: "dateCardMoveHint" } }),
       live,
+      resultLive,
       container
     ]);
     m.root = root;
@@ -1206,6 +1225,10 @@
       m.layout.expand("countdown");
     }
     const mine = m;
+    if (model.revealCountdown) {
+      model.revealCountdown = false;
+      window.setTimeout(() => revealCountdown(mine), 0);
+    }
     m.cleanups.push(ns.countdowns.watch({ visible: () => mine === m && cardVisible(), render: (now) => updateCountdown({ fromTick: true, now }) }));
     m.cleanups.push(ns.countdowns.onFlush(() => commitCountdown(false)));
     m.cleanups.push(ns.countdowns.subscribe(() => onCountdownsChanged()));
@@ -1268,12 +1291,25 @@
     model.fields.cdLabel = item.label;
     model.fields.cdTarget = item.targetDate;
     model.fields.cdTime = item.targetTime;
+    model.expandCountdown = true;
+    model.revealCountdown = true;
     if (m) {
       m.layout.expand("countdown");
       selectCountdownInCard(item.id);
-    } else {
-      model.expandCountdown = true;
     }
+  }
+
+  // After the pane's Open the shell renders this route and puts focus on
+  // the view (scrolled to the top); then the Countdown card is brought into
+  // view and its title takes focus, so a phone shows what Open did.
+  function revealCountdown(mine) {
+    if (mine !== m) return;
+    const card = byId("card-countdown");
+    const title = byId("card-countdown-title");
+    if (!card || !title) return;
+    title.setAttribute("tabindex", "-1");
+    title.focus({ preventScroll: true });
+    if (typeof card.scrollIntoView === "function") card.scrollIntoView({ block: "start" });
   }
 
   // Settings > Layout > Reset card order & expand all.

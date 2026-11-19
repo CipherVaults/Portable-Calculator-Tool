@@ -18,15 +18,24 @@
 //     second and pause while the page is hidden
 //   - a document the store keeps read-only (newer, corrupt, unreadable) is
 //     never written; the list then lasts for this session only
-//   - another tab's change is adopted without writing, unless focus is in
-//     the Countdown card (then the last writer wins)
+//   - another tab's change is adopted without writing, also while focus is
+//     in the Countdown card (the card keeps the fields being edited); every
+//     write first reads the stored list and merges it by id, so a countdown
+//     another tab added, changed or deleted is never undone here: an id in
+//     both keeps the stored copy unless this tab changed it since (then the
+//     copy saved last), an id only stored stays unless it was deleted here,
+//     an id only here stays unless it was stored before (then another tab
+//     deleted it). The last writer wins only for one record.
+//   - a label is cut at 60 characters (code points, as the engine counts);
+//     a target the engine would refuse never enters the list, so one bad
+//     item can never block every later save
 //
 // Viewers (the Countdowns pane, the Date tool's Countdown card) register
 // with watch({visible(), render(now)}); one ticker serves them all.
 (function () {
   "use strict";
   const ns = window.PCalc;
-  const { el, show, flag } = ns.dom;
+  const { el, show, flag, value, withValues } = ns.dom;
   const MAX = 20;
   const LABEL_MAX = 60;
   const TIME_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
@@ -39,6 +48,9 @@
   let blocked = false; // the store keeps the document read-only
   let writeFailed = false;
   let chain = Promise.resolve();
+  let lastStored = new Set(); // ids in the stored list at the last read or write
+  const deleted = new Set(); // ids deleted here this session (never brought back)
+  const dirty = new Set(); // ids changed here and not yet written
   let writes = 0; // successful writes this session (tests read it)
   const viewers = new Set();
   const listeners = new Set();
@@ -46,9 +58,27 @@
   let pane = null; // {panel, viewer}
 
   const pair = (date, time) => date + "|" + time;
-  const isDate = (v) => typeof v === "string" && ns.miniCal.parseIso(v) !== null;
+  // A real calendar date 0001-01-01 ..= 9999-12-31, as date-core parses it.
+  function isDate(v) {
+    const m = typeof v === "string" ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(v) : null;
+    if (!m) return false;
+    const y = Number(m[1]);
+    const mo = Number(m[2]);
+    const d = Number(m[3]);
+    if (y < 1 || mo < 1 || mo > 12 || d < 1) return false;
+    const leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0;
+    return d <= [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][mo - 1];
+  }
   const isTime = (v) => v === "" || (typeof v === "string" && TIME_RE.test(v));
   const hidden = () => document.visibilityState === "hidden";
+  const idsOf = (list) => new Set(list.map((i) => i.id));
+
+  // At most LABEL_MAX code points (the engine counts chars, not UTF-16
+  // units); a lone surrogate (never valid JSON for the engine) becomes U+FFFD.
+  function cleanLabel(raw) {
+    const chars = Array.from(String(raw || "").trim()).map((c) => (c.length === 1 && c >= "\uD800" && c <= "\uDFFF" ? "\uFFFD" : c));
+    return chars.slice(0, LABEL_MAX).join("");
+  }
 
   async function call(op, req) {
     try {
@@ -106,6 +136,7 @@
   async function init(c) {
     ctx = c;
     items = readOutcome(ctx.outcomes.countdowns);
+    lastStored = idsOf(items);
     flags.clear();
     await classify(items, true);
     ns.bus.on("countdowns-changed", () => adoptOther());
@@ -128,6 +159,7 @@
   // After Retry or Start fresh in the banner: the document is read again.
   async function reload() {
     items = readOutcome(ctx.outcomes.countdowns);
+    lastStored = idsOf(items);
     flags.clear();
     await classify(items, true);
     writeFailed = false;
@@ -135,19 +167,59 @@
     tick();
   }
 
-  // Another tab wrote the document: adopt it without writing, unless the
-  // user is editing the Countdown card here (the last writer wins).
-  async function adoptOther() {
-    const active = document.activeElement;
-    const card = document.getElementById("card-countdown");
-    if (card && active && card.contains(active)) return;
-    const o = await ctx.store.load("countdowns");
-    ctx.outcomes.countdowns = o;
-    items = readOutcome(o);
-    await classify(items, false);
+  // This tab's list merged with the stored one (see the header).
+  function merge(mine, stored) {
+    const own = new Map(mine.map((i) => [i.id, i]));
+    const out = [];
+    for (const s of stored) {
+      if (deleted.has(s.id)) continue;
+      const here = own.get(s.id);
+      if (!here) {
+        out.push(s);
+        continue;
+      }
+      own.delete(s.id);
+      // A copy this tab did not change is only a cache of the stored one.
+      let pick = dirty.has(s.id) ? (here.savedAtMs >= s.savedAtMs ? here : s) : s;
+      const other = pick === here ? s : here;
+      if (pick.finishedSeenAtMs === null && other.finishedSeenAtMs !== null && pair(pick.targetDate, pick.targetTime) === pair(other.targetDate, other.targetTime)) {
+        pick = Object.assign({}, pick, { finishedSeenAtMs: other.finishedSeenAtMs });
+      }
+      out.push(pick);
+    }
+    for (const here of mine) if (own.has(here.id) && !lastStored.has(here.id)) out.push(here);
+    // Two tabs adding at once can pass the cap: the stored ones stay.
+    return out.slice(0, MAX);
+  }
+
+  function ensureFlags() {
     for (const item of items) if (!flags.has(item.id)) flags.set(item.id, { restoredPending: false, closedFinish: false });
-    notify();
-    tick();
+  }
+
+  // Runs `fn` after every queued write and adoption (they never interleave).
+  function queue(fn) {
+    const result = chain.then(fn, fn);
+    chain = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  // Another tab wrote the document: merge it in without writing. The card
+  // keeps the fields being edited (date-tool's onCountdownsChanged).
+  function adoptOther() {
+    return queue(async () => {
+      const o = await ctx.store.load("countdowns");
+      ctx.outcomes.countdowns = o;
+      const stored = readOutcome(o);
+      // A list the store now keeps read-only lasts for this session only.
+      if (!(o && o.readOnly)) {
+        items = merge(items, stored);
+        lastStored = idsOf(stored);
+      }
+      await classify(items, false);
+      ensureFlags();
+      notify();
+      tick();
+    });
   }
 
   // ---- writing ----------------------------------------------------------------
@@ -158,17 +230,32 @@
     return !(o && o.readOnly);
   }
 
-  // Writes run one at a time, in order; the returned promise settles with
+  // Writes run one at a time, in order; each reads the stored list first and
+  // writes the merge (see the header). The returned promise settles with
   // this write's outcome (true = saved) and the chain never rejects.
   function write() {
     if (!canWrite()) return Promise.resolve(false);
-    const text = JSON.stringify({ schemaVersion: 1, items });
-    const run = async () => {
+    return queue(async () => {
       if (!canWrite()) return false;
-      const r = await ctx.store.save("countdowns", text);
+      const o = await ctx.store.load("countdowns");
+      if (o && o.readOnly) {
+        ctx.outcomes.countdowns = o;
+        blocked = true;
+        notify();
+        return false;
+      }
+      const stored = readOutcome(o);
+      items = merge(items, stored);
+      lastStored = idsOf(stored);
+      ensureFlags();
+      const written = items;
+      const r = await ctx.store.save("countdowns", JSON.stringify({ schemaVersion: 1, items: written }));
       if (r.ok) {
         writes++;
         writeFailed = false;
+        lastStored = idsOf(written);
+        // Written: unless changed again meanwhile, the stored copy rules.
+        for (const item of written) if (items.includes(item)) dirty.delete(item.id);
         ctx.outcomes.countdowns = { name: "countdowns", status: "ok", readOnly: false, doc: r.text, schemaVersion: null, backup: null, field: null };
       } else if (r.code === "read_only") {
         blocked = true;
@@ -177,10 +264,7 @@
       }
       notify();
       return r.ok;
-    };
-    const result = chain.then(run, run);
-    chain = result.then(() => undefined, () => undefined);
-    return result;
+    });
   }
 
   function newId() {
@@ -196,7 +280,7 @@
   // Saves {label, targetDate, targetTime} into item `id`, or a new item when
   // id is null. Returns {id, saved} ({id: null} when nothing was taken).
   function upsert(id, fields) {
-    const label = String(fields.label || "").trim().slice(0, LABEL_MAX);
+    const label = cleanLabel(fields.label);
     if (!isDate(fields.targetDate) || !isTime(fields.targetTime)) return { id: null, saved: Promise.resolve(false) };
     const now = Date.now();
     let item = id ? items.find((i) => i.id === id) : null;
@@ -209,6 +293,7 @@
         flags.set(item.id, { restoredPending: false, closedFinish: false });
       }
       items = items.map((i) => (i.id === item.id ? next : i));
+      dirty.add(item.id);
       item = next;
     } else {
       if (items.length >= MAX) return { id: null, full: true, saved: Promise.resolve(false) };
@@ -216,6 +301,7 @@
       if (!newIdValue) return { id: null, saved: Promise.resolve(false) };
       item = { id: newIdValue, label, targetDate: fields.targetDate, targetTime: fields.targetTime, createdAtMs: now, savedAtMs: now, finishedSeenAtMs: null };
       items = items.concat(item);
+      dirty.add(item.id);
       flags.set(item.id, { restoredPending: false, closedFinish: false });
     }
     notify();
@@ -227,6 +313,7 @@
   function remove(id) {
     if (!items.some((i) => i.id === id)) return Promise.resolve(false);
     items = items.filter((i) => i.id !== id);
+    deleted.add(id);
     flags.delete(id);
     notify();
     return write();
@@ -239,6 +326,7 @@
     if (!item || item.finishedSeenAtMs !== null || hidden() || !canWrite()) return;
     const next = Object.assign({}, item, { finishedSeenAtMs: Date.now() });
     items = items.map((i) => (i.id === id ? next : i));
+    dirty.add(id);
     write();
   }
 
@@ -361,7 +449,8 @@
 
     function build() {
       const tt = ctx.t;
-      count.textContent = tt("date.cd.count", { count: items.length, max: MAX });
+      const fmt = (v) => value(ns.format.formatNumber(String(v), ctx.lang, { digits: ctx.digits, grouping: "none" }));
+      show(count, withValues(tt("date.cd.count", { count: fmt(items.length), max: fmt(MAX) })));
       const n = note(tt);
       noteNode.textContent = n;
       flag(noteNode, "hidden", n === "");

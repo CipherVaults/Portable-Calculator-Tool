@@ -19,6 +19,7 @@
     "src/shell/prefs.js",
     "src/shell/history.js",
     "src/shell/card-layout.js",
+    "src/shell/announcer.js",
     "src/tools/date/mini-cal.js",
     "src/tools/date/countdowns.js",
     "src/tools/date/date-tool.js",

@@ -7,10 +7,12 @@
 // (createWindow's `now`), so every expectation is exact.
 //
 //   B.date-*        the cards, calendars, business pick, layout, settings
-//                   and the history hook
+//                   the history hook, results spoken once, LTR runs and
+//                   Clear all on a phone
 //   C.countdowns-*  the countdown list in the "countdowns" document:
 //                   restore, finished while closed, no write on a tick,
-//                   the cap of 20, read-only documents, other tabs
+//                   the cap of 20, read-only documents, other tabs (merge
+//                   on write by id), labels by code points, the pane's Open
 // Each rule has a mutant in DATE_MUTANTS that the same test must catch.
 import { createOrigin, tick, until } from "./mini-dom.mjs";
 import { bootApp, fakeTauri } from "./web-harness.mjs";
@@ -70,6 +72,8 @@ export function dateBTests(web, engine) {
       const app = await boot({ overrides: src });
       await settle(app);
       const idle = KEYS.every((k) => app.byId(k + "Live").textContent === "→ —");
+      // Date Calculator v1.2.0's own wording (B9: ported unchanged).
+      const addHint = app.byId("addTrace").textContent === "date ± years, months (clamped to month end) → ± weeks, days = result";
       input(app, "betweenStart", "2024-01-01");
       input(app, "betweenEnd", "2024-12-31");
       input(app, "addStart", "2024-01-31");
@@ -92,9 +96,15 @@ export function dateBTests(web, engine) {
         info: app.byId("infoLive").textContent,
         clock: app.byId("cdClock").textContent,
         trace: app.byId("betweenTrace").children.length > 1,
-        hours: app.byId("betweenResult").textContent.includes("8,760 hours")
+        hours: app.byId("betweenResult").textContent.includes("8,760 hours"),
+        nextBirthday: /^next birthday \w{3} 2027-02-28 · in /.test(app.byId("ageResult").children[2].textContent)
       };
-      const ok = idle && got.between === "→ 365 days" && got.add === "→ 2024-02-29 (Thursday)" && got.amount === "1" && got.clamp &&
+      input(app, "bizStart", "2026-11-20");
+      input(app, "bizEnd", "2026-11-02");
+      await until(() => app.byId("businessResult").textContent.includes("before"), 3000);
+      got.backward = app.byId("businessResult").textContent.includes(" · end date is before the start date");
+      got.addHint = addHint;
+      const ok = got.addHint && got.nextBirthday && got.backward && idle && got.between === "→ 365 days" && got.add === "→ 2024-02-29 (Thursday)" && got.amount === "1" && got.clamp &&
         got.business === "→ 14 business days" && got.age === "→ 26 years, 8 months, 21 days" && got.info === "→ Thursday · 2024-W09-4" &&
         got.clock === "1d 00h 00m 00s" && got.trace && got.hours;
       return { ok, detail: JSON.stringify({ idle, ...got }) };
@@ -602,6 +612,90 @@ export function dateBTests(web, engine) {
       const ok = app.html.getAttribute("data-store") === "file" && ops.has("date.days_between") && ops.has("date.month_grid") && ops.has("date.countdown") &&
         saves.includes("countdowns") && saves.includes("settings");
       return { ok, detail: `store=${app.html.getAttribute("data-store")} ops=${[...ops].join(",")} saves=${saves.join(",")}` };
+    },
+
+    async "date-results-spoken-once"(src) {
+      // Plan B16: no result box is a live region (each changes per
+      // keystroke); the tool's one polite region speaks a result once
+      // typing pauses, at once on Enter or Calculate, never on mount.
+      const app = await boot({ overrides: src });
+      await settle(app);
+      const region = app.byId("dateResultLive");
+      const boxes = KEYS.every((k) => !app.byId(k + "Result").hasAttribute("role") && !app.byId(k + "Result").hasAttribute("aria-live"));
+      const mount = attr(region, "aria-live") === "polite" && region.textContent === "";
+      input(app, "betweenStart", "2024-01-01");
+      input(app, "betweenEnd", "2024-12-30");
+      await until(() => app.byId("betweenLive").textContent === "→ 364 days", 2000);
+      input(app, "betweenEnd", "2024-12-31");
+      await until(() => app.byId("betweenLive").textContent === "→ 365 days", 2000);
+      const whileTyping = region.textContent === "";
+      await until(() => region.textContent !== "", 2000);
+      const words = app.PCalc.announcer.resultWords(app.byId("betweenResult"));
+      const first = region.textContent === words && words.includes("365 days");
+      // Spoken once: no second (stale) timer speaks again later.
+      await tick(900);
+      const paused = first && region.textContent === words;
+      app.byId("betweenEnd").focus();
+      app.document.press("Enter");
+      await until(() => region.textContent !== words, 400);
+      // The same words again: a no-break space marks the change.
+      const enter = region.textContent !== words && region.textContent.trim() === words;
+      const ok = boxes && mount && whileTyping && paused && enter;
+      return { ok, detail: JSON.stringify({ boxes, mount, whileTyping, paused, enter, region: region.textContent }) };
+    },
+
+    async "date-ltr-isolation"(src) {
+      // Plan B5c: engine English (results, expressions, trace and live
+      // lines, holiday dates) sits in <bdi dir="ltr"> runs and the amount
+      // fields are dir="ltr", so a right-to-left page never reorders
+      // "2026-11-19 - 5 days = 2026-11-14" or shows "-5" as "5-".
+      const app = await boot({ overrides: src, href: "https://example.test/p/#/settings" });
+      await until(() => app.byId("holidayPresetSelect"), 3000);
+      const preset = app.byId("holidayPresetSelect");
+      preset.value = "us";
+      preset.dispatchEvent(new app.window.Event("change"));
+      await app.PCalc.dateSettings.ready();
+      app.window.location.assignHash("#/date");
+      await until(() => app.html.getAttribute("data-route") === "date", 2000);
+      await settle(app);
+      app.byId("addModeSubtractBtn").click();
+      input(app, "addStart", "2026-11-19");
+      input(app, "addDays", "5");
+      input(app, "bizStart", "2026-12-21");
+      input(app, "bizEnd", "2027-01-08");
+      await until(() => app.byId("addLive").textContent === "→ 2026-11-14 (Saturday)" && !app.byId("bizHolidayHits").hasAttribute("hidden"), 3000);
+      const ltrRun = (n) => Boolean(n) && n.localName === "bdi" && attr(n, "dir") === "ltr";
+      const box = app.byId("addResult");
+      const got = {
+        main: ltrRun(box.querySelector(".result-main").children[0]),
+        expression: ltrRun(box.querySelector(".result-sub").children[0]) && box.querySelector(".result-sub").textContent.includes("2026-11-14"),
+        trace: app.byId("addTrace").children.length > 0 && app.byId("addTrace").children.every((li) => li.children.some(ltrRun)),
+        live: app.byId("addLive").children.some(ltrRun),
+        hits: app.document.querySelectorAll(".hit-date").length > 0 && Array.from(app.document.querySelectorAll(".hit-date")).every(ltrRun),
+        amounts: ["addYears", "addMonths", "addWeeks", "addDays"].every((id) => attr(app.byId(id), "dir") === "ltr")
+      };
+      const ok = Object.values(got).every(Boolean);
+      return { ok, detail: JSON.stringify(got) };
+    },
+
+    async "date-clear-all-phone"(src) {
+      // Clear all on a phone (coarse pointer) keeps focus on the button: a
+      // focused field would raise the keyboard and hide the bottom bar. A
+      // mouse still moves focus to the first field. Both say it politely.
+      const phone = await boot({ overrides: src, coarse: true });
+      await settle(phone);
+      input(phone, "betweenStart", "2024-01-01");
+      phone.byId("dateClearAllBtn").focus();
+      phone.byId("dateClearAllBtn").click();
+      await tick(60);
+      const kept = phone.document.activeElement === phone.byId("dateClearAllBtn") && phone.byId("betweenStart").value === "" &&
+        phone.byId("dateResultLive").textContent === "All cards cleared.";
+      const desk = await boot({ overrides: src });
+      await settle(desk);
+      desk.byId("dateClearAllBtn").click();
+      await tick(60);
+      const moved = desk.document.activeElement === desk.byId("betweenStart") && desk.byId("dateResultLive").textContent === "All cards cleared.";
+      return { ok: kept && moved, detail: JSON.stringify({ kept, moved, phone: phone.document.activeElement.id }) };
     }
   };
 }
@@ -762,8 +856,8 @@ export function dateCTests(web, engine) {
 
     async "countdowns-other-tab"(src) {
       // Another tab's commit is adopted without writing (the pane and the
-      // selector follow); while focus is in this tab's Countdown card the
-      // change is ignored (the last writer wins).
+      // selector follow), also while focus is in this tab's Countdown card:
+      // the list follows, the field being edited keeps its text and focus.
       const origin = createOrigin();
       const a = await boot({ overrides: src, origin });
       const b = await boot({ overrides: src, origin });
@@ -774,12 +868,116 @@ export function dateCTests(web, engine) {
       await until(() => b.PCalc.countdowns.list().length === 1, 2000);
       const adopted = b.PCalc.countdowns.list()[0].label === "From A" && b.PCalc.countdowns.writes() === 0 && b.byId("cdSelect").children.length === 2;
       b.byId("cdLabel").focus();
+      input(b, "cdLabel", "typing", ["input"]);
       input(a, "cdTarget", "2027-03-03", ["input", "change"]);
       await until(() => JSON.parse(doc(origin)).items[0].targetDate === "2027-03-03", 2000);
+      await until(() => b.PCalc.countdowns.list()[0].targetDate === "2027-03-03", 2000);
       await tick(120);
-      const ignored = b.PCalc.countdowns.list()[0].targetDate === "2027-02-02" && b.PCalc.countdowns.writes() === 0;
-      const ok = adopted && ignored;
-      return { ok, detail: JSON.stringify({ adopted, ignored }) };
+      const whileEditing = b.PCalc.countdowns.list()[0].targetDate === "2027-03-03" && b.PCalc.countdowns.writes() === 0 &&
+        b.byId("cdLabel").value === "typing" && b.document.activeElement === b.byId("cdLabel");
+      const ok = adopted && whileEditing;
+      return { ok, detail: JSON.stringify({ adopted, whileEditing, list: b.PCalc.countdowns.list().map((x) => x.targetDate) }) };
+    },
+
+    async "countdowns-multitab-other-tab-item-survives"(src) {
+      // The review case: tab A has focus in its label; tab B saves a new
+      // countdown; A then commits a label edit. B's countdown stays on
+      // disk, and B's next write keeps A's edit (no whole-list overwrite).
+      const raw = countdownsDoc([item({ id: "cd-a", label: "Alpha", targetDate: "2027-01-10", savedAtMs: NOW - 1000 }), item({ id: "cd-b", label: "Beta", targetDate: "2027-01-20", savedAtMs: NOW - 9000 })]);
+      const { app: a, origin } = await seeded({ countdowns: raw }, src);
+      const b = await boot({ overrides: src, origin });
+      await settle(b);
+      await tick(80);
+      a.byId("cdLabel").focus();
+      b.byId("countdownClearBtn").click();
+      await tick(60);
+      input(b, "cdLabel", "FromTabB", ["input"]);
+      input(b, "cdTarget", "2027-04-04", ["input", "change"]);
+      await until(() => JSON.parse(doc(origin)).items.length === 3, 2000);
+      await until(() => a.PCalc.countdowns.list().length === 3, 2000);
+      const aSees = a.PCalc.countdowns.list().some((x) => x.label === "FromTabB") && a.document.activeElement === a.byId("cdLabel");
+      input(a, "cdLabel", "Alpha!", ["input", "change"]);
+      await until(() => JSON.parse(doc(origin)).items.some((x) => x.label === "Alpha!"), 2000);
+      await tick(80);
+      const afterA = JSON.parse(doc(origin)).items.map((x) => x.label).sort().join(",");
+      const keptB = afterA === "Alpha!,Beta,FromTabB";
+      await until(() => b.PCalc.countdowns.list().some((x) => x.label === "Alpha!"), 2000);
+      input(b, "cdLabel", "FromTabB2", ["input", "change"]);
+      await until(() => JSON.parse(doc(origin)).items.some((x) => x.label === "FromTabB2"), 2000);
+      await tick(80);
+      const afterB = JSON.parse(doc(origin)).items.map((x) => x.label).sort().join(",");
+      const keptA = afterB === "Alpha!,Beta,FromTabB2";
+      const ok = aSees && keptB && keptA;
+      return { ok, detail: JSON.stringify({ aSees, afterA, afterB }) };
+    },
+
+    async "countdowns-merge-on-write"(src) {
+      // A write first reads the stored list (another tab may have written
+      // without this tab hearing of it yet) and merges by id: the copy
+      // saved last wins, a countdown only stored stays, one deleted here
+      // stays deleted, one deleted elsewhere is not brought back.
+      const alpha = item({ id: "cd-a", label: "Alpha", targetDate: "2027-01-10", savedAtMs: NOW - 5000 });
+      const beta = item({ id: "cd-b", label: "Beta", targetDate: "2027-01-20", savedAtMs: NOW - 6000 });
+      const gamma = item({ id: "cd-c", label: "Gamma", targetDate: "2027-01-30", savedAtMs: NOW - 7000 });
+      const { app, origin } = await seeded({ countdowns: countdownsDoc([alpha, beta, gamma]) }, src);
+      // Another tab, unheard: Alpha renamed later, Gamma deleted, Raw added.
+      const raw = item({ id: "cd-r", label: "Raw", targetDate: "2027-02-02", savedAtMs: NOW + 50 });
+      await putRaw(app, "countdowns", countdownsDoc([Object.assign({}, alpha, { label: "Alpha-other", savedAtMs: NOW + 100 }), beta, raw]));
+      const saved = await app.PCalc.countdowns.remove("cd-b");
+      await tick(60);
+      const stored = JSON.parse(doc(origin)).items.map((x) => x.id + ":" + x.label).join(",");
+      const memory = app.PCalc.countdowns.list().map((x) => x.id + ":" + x.label).join(",");
+      const want = "cd-a:Alpha-other,cd-r:Raw";
+      const ok = saved === true && stored === want && memory === want;
+      return { ok, detail: JSON.stringify({ saved, stored, memory }) };
+    },
+
+    async "countdowns-label-code-points"(src) {
+      // Labels are cut by code points, as the engine counts: 59 letters and
+      // an astral character (61 UTF-16 units) save and re-save intact, and
+      // the next countdown saves too; a lone surrogate is replaced; a date
+      // the engine refuses never enters the list.
+      const long = "a".repeat(59) + "\u{1F600}";
+      const { app, origin } = await seeded({ countdowns: countdownsDoc([item({ id: "cd-a", label: long })]) }, src);
+      const cd = app.PCalc.countdowns;
+      const edit = await cd.upsert("cd-a", { label: long + "zz", targetDate: "2027-05-05", targetTime: "" }).saved;
+      const next = await cd.upsert(null, { label: "Next", targetDate: "2027-06-06", targetTime: "" }).saved;
+      const lone = await cd.upsert(null, { label: "x\uD800", targetDate: "2027-07-07", targetTime: "" }).saved;
+      const bad = cd.upsert(null, { label: "Bad", targetDate: "2027-02-30", targetTime: "" });
+      await tick(60);
+      const items = JSON.parse(doc(origin)).items;
+      const first = items.find((x) => x.id === "cd-a");
+      const note = cd.note((k) => k);
+      const ok = edit === true && next === true && lone === true && bad.id === null && items.length === 3 &&
+        first.label === long && first.targetDate === "2027-05-05" && items.some((x) => x.label === "x\uFFFD") && note !== "date.cd.note.writeFailed";
+      return { ok, detail: JSON.stringify({ edit, next, lone, bad: bad.id, n: items.length, label: first && first.label.length, note }) };
+    },
+
+    async "countdowns-pane-open-reveals-card"(src) {
+      // The Countdowns pane's Open closes the sheet, then (after the shell
+      // has focused the view) expands the Countdown card with that
+      // countdown and moves focus to its title, so a phone shows it.
+      const raw = countdownsDoc([item({ id: "cd-a", label: "Trip", savedAtMs: NOW - 9000 }), item({ id: "cd-b", label: "Exam", targetDate: "2027-06-01", targetTime: "", savedAtMs: NOW - 1000 })]);
+      const { app } = await seeded({ countdowns: raw }, src);
+      app.byId("card-countdown").querySelector(".card-collapse").click();
+      await tick(40);
+      const collapsed = app.byId("card-countdown").classList.contains("is-collapsed");
+      app.byId("paneToggle").click();
+      app.byId("paneTab-countdowns").click();
+      await until(() => app.document.querySelectorAll(".cd-row").length === 2, 2000);
+      const row = Array.from(app.document.querySelectorAll(".cd-row")).find((r) => attr(r, "data-value") === "cd-a");
+      row.querySelector("button").click();
+      await until(() => app.document.activeElement === app.byId("card-countdown-title"), 1000);
+      await tick(40);
+      const got = {
+        collapsed,
+        focus: app.document.activeElement === app.byId("card-countdown-title"),
+        expanded: !app.byId("card-countdown").classList.contains("is-collapsed"),
+        label: app.byId("cdLabel").value,
+        paneClosed: app.byId("pane").hasAttribute("hidden")
+      };
+      const ok = got.collapsed && got.focus && got.expanded && got.label === "Trip" && got.paneClosed;
+      return { ok, detail: JSON.stringify(got) };
     }
   };
 }
@@ -788,6 +986,9 @@ export function dateCTests(web, engine) {
 export const DATE_MUTANTS = [
   ["B", "date-ipc-race", "src/tools/date/date-tool.js", "if (!m || ticket !== m.seq.add) return;", "if (!m) return;\n    void ticket;"],
   ["B", "date-cards-live", "src/tools/date/date-tool.js", "const normal = ns.format.normalizeDigits(n.value);", "const normal = n.value;"],
+  ["B", "date-cards-live", "i18n/en.json", "(clamped to month end)", "(clamped to the month end)"],
+  ["B", "date-cards-live", "i18n/en.json", "\"end date is before the start date\"", "\"the end date is before the start date\""],
+  ["B", "date-cards-live", "i18n/en.json", "\"next birthday {weekday}", "\"Next birthday {weekday}"],
   ["B", "date-calendar-click", "src/tools/date/date-tool.js", '      setField("infoDate", iso);\n      await updateInfo();', "      await updateInfo();"],
   ["B", "date-calendar-click", "src/tools/date/mini-cal.js", 'suffix += t("date.cal.suffixSelected");', "void t;"],
   ["B", "date-calendar-click", "src/tools/date/mini-cal.js", "    todayBtn.addEventListener(\"click\", () => showToday());\n", "    todayBtn.addEventListener(\"click\", () => opts.onPick(opts.today(), {}));\n"],
@@ -814,7 +1015,20 @@ export const DATE_MUTANTS = [
   ["B", "date-settings-calendar", "src/tools/date/date-settings.js", '        if (v === "eg") next.weekend = WEEKENDS.friSat.slice();\n', ""],
   ["B", "date-settings-calendar", "src/tools/date/date-settings.js", "if (picked.length === 7) {", "if (false) {"],
   ["B", "date-settings-calendar", "src/tools/date/date-settings.js", 'flag(byId("hijriPlusBtn"), "disabled", offset >= HIJRI_OFFSET_MAX);', "void offset;"],
-  ["B", "date-history-hook", "src/tools/date/date-tool.js", "    if (m) record(key);\n", "\n"],
+  ["B", "date-history-hook", "src/tools/date/date-tool.js", "    if (!m) return;\n    record(key);\n", "    if (!m) return;\n"],
+  ["B", "date-results-spoken-once", "src/tools/date/date-tool.js", 'attrs: { id: key + "Result" } }', 'attrs: { id: key + "Result", role: "status", "aria-live": "polite" } }'],
+  ["B", "date-results-spoken-once", "src/tools/date/date-tool.js", 'on(id, ["input"], () => m.say.soon(() => speech(key)));', 'on(id, ["input"], () => m.say.now(() => speech(key)));'],
+  ["B", "date-results-spoken-once", "src/tools/date/date-tool.js", "    record(key);\n    m.say.now(() => speech(key));\n", "    record(key);\n"],
+  ["B", "date-results-spoken-once", "src/shell/announcer.js", "    function soon(read) {\n      cancel();", "    function soon(read) {"],
+  ["B", "date-ltr-isolation", "src/tools/date/date-tool.js", 'el("span", { className: "result-main" }, ltrNodes(main))', 'el("span", { className: "result-main", text: main })'],
+  ["B", "date-ltr-isolation", "src/tools/date/date-tool.js", "const subs = [eng(r.expressionText), ", "const subs = [str(r.expressionText), "],
+  ["B", "date-ltr-isolation", "src/tools/date/date-tool.js", ': el("li", {}, ltrNodes(l)));', ': el("li", { text: l }));'],
+  ["B", "date-ltr-isolation", "src/tools/date/date-tool.js", "    if (n) show(n, withValues(text));", "    if (n) n.textContent = text;"],
+  ["B", "date-ltr-isolation", "src/tools/date/date-tool.js", 'inputmode: "numeric", dir: "ltr", ', 'inputmode: "numeric", '],
+  ["B", "date-ltr-isolation", "src/tools/date/date-tool.js", 'el("bdi", { className: "hit-date", text: str(h.date), attrs: { dir: "ltr" } })', 'el("span", { className: "hit-date", text: str(h.date) })'],
+  ["B", "date-ltr-isolation", "src/core/dom.js", 'const KINDS = { "\\uE000": ["num", null], "\\uE002": ["ltr", "ltr"],', 'const KINDS = { "\\uE000": ["num", null], "\\uE002": ["ltr", null],'],
+  ["B", "date-clear-all-phone", "src/tools/date/date-tool.js", 'const first = coarse ? byId("dateClearAllBtn") : firstFocus();', "const first = firstFocus();"],
+  ["B", "date-clear-all-phone", "src/tools/date/date-tool.js", '    m.say.say(m.t("tool.cleared"));\n', "\n"],
   ["B", "date-history-hook", "src/tools/date/date-tool.js", "      await updateInfo();\n      return;\n    }\n    if (calKey === \"cd\") {", "      await updateInfo();\n      record(\"info\");\n      return;\n    }\n    if (calKey === \"cd\") {"],
   ["C", "countdowns-restore-future", "src/tools/date/countdowns.js", "flags.set(item.id, { restoredPending: fresh,", "flags.set(item.id, { restoredPending: false,"],
   ["C", "countdowns-restore-future", "src/tools/date/date-tool.js", "    const latest = list.reduce((a, b) => (b.savedAtMs > a.savedAtMs ? b : a));", "    const latest = list[0];"],
@@ -824,8 +1038,20 @@ export const DATE_MUTANTS = [
   ["C", "countdowns-no-write-on-tick", "src/tools/date/date-tool.js", 'for (const id of ["cdTarget", "cdTime", "cdLabel"]) on(id, ["change"], () => commitCountdown(true));', 'for (const id of ["cdTarget", "cdTime", "cdLabel"]) on(id, ["input", "change"], () => commitCountdown(true));'],
   ["C", "countdowns-no-write-on-tick", "src/tools/date/countdowns.js", "      if (samePair && item.label === label) return { id: item.id, saved: Promise.resolve(true) };\n", "\n"],
   ["C", "countdowns-list-cap-and-delete", "src/tools/date/countdowns.js", "if (items.length >= MAX) return { id: null, full: true, saved: Promise.resolve(false) };", ""],
-  ["C", "countdowns-list-cap-and-delete", "src/tools/date/countdowns.js", "const label = String(fields.label || \"\").trim().slice(0, LABEL_MAX);", "const label = String(fields.label || \"\").trim();"],
+  ["C", "countdowns-list-cap-and-delete", "src/tools/date/countdowns.js", "return chars.slice(0, LABEL_MAX).join(\"\");", "return chars.join(\"\");"],
   ["C", "countdowns-read-only-never-written", "src/tools/date/countdowns.js", 'if (o && o.status === "newer") return t("date.cd.note.newer");', ""],
-  ["C", "countdowns-other-tab", "src/tools/date/countdowns.js", "    if (card && active && card.contains(active)) return;\n", "\n"]
+  ["C", "countdowns-other-tab", "src/tools/date/countdowns.js", "    return queue(async () => {\n      const o = await ctx.store.load(\"countdowns\");\n      ctx.outcomes.countdowns = o;",
+    "    const card = document.getElementById(\"card-countdown\");\n    if (card && card.contains(document.activeElement)) return Promise.resolve();\n    return queue(async () => {\n      const o = await ctx.store.load(\"countdowns\");\n      ctx.outcomes.countdowns = o;"],
+  ["C", "countdowns-multitab-other-tab-item-survives", "src/tools/date/countdowns.js", "    return out.slice(0, MAX);", "    void out;\n    return mine.slice(0, MAX);"],
+  ["C", "countdowns-merge-on-write", "src/tools/date/countdowns.js", "      items = merge(items, stored);\n      lastStored = idsOf(stored);\n      ensureFlags();", "      void stored;\n      ensureFlags();"],
+  ["C", "countdowns-merge-on-write", "src/tools/date/countdowns.js", "    deleted.add(id);\n", ""],
+  ["C", "countdowns-merge-on-write", "src/tools/date/countdowns.js", "if (own.has(here.id) && !lastStored.has(here.id)) out.push(here);", "if (own.has(here.id)) out.push(here);"],
+  ["C", "countdowns-merge-on-write", "src/tools/date/countdowns.js", "let pick = dirty.has(s.id) ? (here.savedAtMs >= s.savedAtMs ? here : s) : s;", "let pick = here;"],
+  ["C", "countdowns-other-tab", "src/tools/date/countdowns.js", "let pick = dirty.has(s.id) ? (here.savedAtMs >= s.savedAtMs ? here : s) : s;", "let pick = here.savedAtMs >= s.savedAtMs ? here : s;"],
+  ["C", "countdowns-multitab-other-tab-item-survives", "src/tools/date/countdowns.js", "      dirty.add(item.id);\n      item = next;", "      item = next;"],
+  ["C", "countdowns-pane-open-reveals-card", "src/tools/date/date-tool.js", "      window.setTimeout(() => revealCountdown(mine), 0);\n", "\n"],
+  ["C", "countdowns-pane-open-reveals-card", "src/tools/date/date-tool.js", '    title.focus({ preventScroll: true });\n', "\n"],
+  ["C", "countdowns-label-code-points", "src/tools/date/countdowns.js", "return chars.slice(0, LABEL_MAX).join(\"\");","return String(raw || \"\").trim().slice(0, LABEL_MAX);"],
+  ["C", "countdowns-label-code-points", "src/tools/date/countdowns.js", "    const m = typeof v === \"string\" ? /^(\\d{4})-(\\d{2})-(\\d{2})$/.exec(v) : null;\n    if (!m) return false;", "    if (ns.miniCal.parseIso(v) !== null) return true;\n    const m = typeof v === \"string\" ? /^(\\d{4})-(\\d{2})-(\\d{2})$/.exec(v) : null;\n    if (!m) return false;"]
 ];
 

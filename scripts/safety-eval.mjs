@@ -32,13 +32,18 @@
 //                the Business Days start/end pick, the card layout
 //                (collapse, keyboard and pointer reorder with the touch
 //                threshold, the Move menu, Reset), the calendar settings,
-//                the history hook and the desktop adapter
+//                the history hook, the desktop adapter, results spoken in
+//                one polite region (after a pause or on Enter), engine
+//                English in left-to-right runs, Clear all on a phone
 //   C.countdowns-* the countdown list in the "countdowns" document: launch
 //                restore ("restored", then counting down), finished while
 //                closed (finishedSeenAtMs written once, only when visible),
 //                no write on a tick, input or page hide, the cap of 20 and
 //                Delete, a newer document never written, another tab's
-//                change adopted without writing
+//                change adopted without writing (also while editing), a
+//                write that merges the stored list by id (another tab's
+//                countdown survives), labels cut by code points, the
+//                pane's Open revealing the card
 //   B.percent-*  the Percentage tool (scripts/lib/eval-percent.mjs, PCT v2.3.0
 //                behaviour): the eight cards' live results, formulas and
 //                result lines, their parity with the engine's label,
@@ -46,7 +51,9 @@
 //                engine's "<br>" labels, errors and out of range, swap, tip
 //                presets and people, tax mode, paste cleaning, an IPC race,
 //                the history hook, the session model, the layout and Reset,
-//                and the desktop adapter
+//                the desktop adapter, results spoken once, text fields
+//                that take Arabic-Indic digits, LTR runs and fields, the
+//                Digits setting on the tip presets, Clear all on a phone
 //   C.percent-*  settings.percent: the layout a launch restores (without a
 //                write), and a read-only settings document never written
 //   B/C.mutant.* each important rule broken by a one-line mutant that the
@@ -280,7 +287,8 @@ for (const [name, line] of CSS_MUTANTS) {
     ["terminal-focus-ring-too-dim", tokens.replace("--focus-ring: var(--gold);", "--focus-ring: #30333b;")],
     ["retro-bar-gradient-end-as-first-planned", inBlock(retro, "--bar-bg-end: #0f78bd;", "--bar-bg-end: #1084D0;")],
     ["retro-selected-focus-ring-black-on-navy", inBlock(retro, "--focus-ring-selected: #FFFFFF;", "--focus-ring-selected: #000000;")],
-    ["retro-token-missing", inBlock(retro, "  --selected-text: #FFFFFF;\n", "")],
+    ["retro-placeholder-default-grey", inBlock(retro, "--placeholder: #333333;", "--placeholder: #808080;")],
+    ["retro-token-missing", inBlock(retro,"  --selected-text: #FFFFFF;\n", "")],
     ["theme-block-missing", tokens.replace('[data-theme="retro"] {', '[data-theme="retro-old"] {')]
   ];
   for (const [name, text] of THEME_MUTANTS) {

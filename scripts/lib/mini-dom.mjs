@@ -16,8 +16,9 @@
 //                               focus trap is what keeps focus in a modal)
 //   window                      location.hash + hashchange, a settable
 //                               clock (opts.now), page visibility,
-//                               history.replaceState, matchMedia (width and
-//                               prefers-color-scheme, both changeable),
+//                               history.replaceState, matchMedia (width
+//                               and prefers-color-scheme, both changeable;
+//                               pointer coarse/fine from opts.coarse),
 //                               localStorage, BroadcastChannel, navigator
 //                               (languages, storage), timers, fetch (a map
 //                               of URLs to bytes), crypto, WebAssembly
@@ -749,7 +750,7 @@ class MediaQueryList {
 export function createWindow(opts = {}) {
   const origin = opts.origin || createOrigin();
   const media = [];
-  const state = { width: opts.width ?? 390, light: Boolean(opts.light) };
+  const state = { width: opts.width ?? 390, light: Boolean(opts.light), coarse: Boolean(opts.coarse) };
   const win = {};
   const doc = new Document(win);
   const location = {
@@ -811,6 +812,8 @@ export function createWindow(opts = {}) {
       let m;
       if ((m = /\(min-width:\s*(\d+)px\)/.exec(q))) return state.width >= Number(m[1]);
       if ((m = /\(max-width:\s*(\d+)px\)/.exec(q))) return state.width <= Number(m[1]);
+      if (/\(pointer:\s*coarse\)/.test(q)) return state.coarse;
+      if (/\(pointer:\s*fine\)/.test(q)) return !state.coarse;
       if (/prefers-color-scheme:\s*light/.test(q)) return state.light;
       if (/prefers-color-scheme:\s*dark/.test(q)) return !state.light;
       return false;
