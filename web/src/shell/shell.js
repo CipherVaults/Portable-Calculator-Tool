@@ -249,12 +249,13 @@
         b.setAttribute("tabindex", on ? "0" : "-1");
       }
       nodes.panePanel.setAttribute("aria-labelledby", "paneTab-" + tab);
-      // Countdowns: the live list (tools/date/countdowns.js).
+      // Countdowns: the live list (tools/date/countdowns.js); History: the
+      // history panel (history/history-panel.js).
+      if (tab !== "countdowns") ns.countdowns.leavePane();
+      if (tab !== "history") ns.historyPanel.leave();
       if (tab === "countdowns") ns.countdowns.renderPane(nodes.panePanel);
-      else {
-        ns.countdowns.leavePane();
-        show(nodes.panePanel, [el("p", { className: "status", text: t()("pane.empty." + tab) })]);
-      }
+      else if (tab === "history") ns.historyPanel.render(nodes.panePanel, ctx);
+      else show(nodes.panePanel, [el("p", { className: "status", text: t()("pane.empty." + tab) })]);
       if (ctx.state.pane.tab !== tab) {
         ctx.state.pane.tab = tab;
         if (!opts || opts.save !== false) ctx.saveState();
@@ -456,7 +457,9 @@
           continue;
         }
         const armed = resetArmed === name;
-        const reset = el("button", { className: armed ? "button danger" : "button", text: tt(armed ? "banner.resetConfirm" : "banner.reset"),
+        // History: "Start a new history" (the old document is backed up first).
+        const resetKey = name === "history" ? (armed ? "banner.resetHistoryConfirm" : "banner.resetHistory") : armed ? "banner.resetConfirm" : "banner.reset";
+        const reset = el("button", { className: armed ? "button danger" : "button", text: tt(resetKey),
           attrs: { type: "button", "data-doc": name, "data-state": armed ? "armed" : "idle" } });
         reset.addEventListener("click", () => {
           if (resetArmed === name) {
@@ -474,6 +477,8 @@
           el("div", { className: "button-row" }, [retry, reset])
         ]));
       }
+      // Entries kept only in memory (a failed write, a read-only history).
+      if (ns.historyStore) items.push(...ns.historyStore.banners(tt));
       if (ctx.lastSaveError) {
         items.push(el("p", { className: "banner", text: tt("banner.saveFailed", { doc: tt("store.doc." + ctx.lastSaveError.name), reason: ctx.lastSaveError.code }),
           attrs: { role: "status", "data-state": "save-failed" } }));
@@ -549,6 +554,11 @@
       renderBanners,
       refresh: () => keepingFocus(() => renderRoute(route)),
       navigate,
+      // Opens the pane on `tab` (the history banner's Export).
+      openPane(tab) {
+        if (tab) selectTab(tab);
+        if (nodes.pane.hasAttribute("hidden")) setPane(true, { focus: true });
+      },
       openDrawer,
       closeModal,
       setPane,

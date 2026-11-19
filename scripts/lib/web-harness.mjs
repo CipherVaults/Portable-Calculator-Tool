@@ -41,6 +41,7 @@ function buildChunk(build, catalogs) {
 // records every invoke.
 export function fakeTauri(engineCall, createDocStore, memoryBackend) {
   const log = [];
+  const exports = [];
   const store = createDocStore(memoryBackend(), engineCall, null, () => 0);
   const invoke = async (cmd, args = {}) => {
     log.push({ cmd, args });
@@ -55,6 +56,16 @@ export function fakeTauri(engineCall, createDocStore, memoryBackend) {
         if (!r.ok) throw r.code === "invalid" ? "invalid" : r.code;
         return r.text;
       }
+      case "store_save_if": {
+        const r = await store.saveIf(args.name, args.expected, args.text);
+        if (!r.ok) throw r.code === "invalid" ? "invalid" : r.code;
+        return r.text;
+      }
+      case "export_file":
+        // pcalc-store's export.rs writes the file; here the call is kept.
+        if (!["json", "csv"].includes(args.kind) || !/^\d{8}-\d{6}$/.test(args.stamp)) throw "export_failed";
+        exports.push(args);
+        return "C:\\Users\\someone\\Downloads\\Portable-Calculator-" + args.stamp + "." + args.kind;
       case "store_clear": {
         const r = await store.clear(args.name);
         if (!r.ok) throw r.code;
@@ -68,7 +79,7 @@ export function fakeTauri(engineCall, createDocStore, memoryBackend) {
         throw `unknown command ${cmd}`;
     }
   };
-  return { core: { invoke }, log, store };
+  return { core: { invoke }, log, store, exports };
 }
 
 // Boots one window. Options:

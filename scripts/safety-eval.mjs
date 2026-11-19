@@ -56,6 +56,22 @@
 //                Digits setting on the tip presets, Clear all on a phone
 //   C.percent-*  settings.percent: the layout a launch restores (without a
 //                write), and a read-only settings document never written
+//   B.history-*  the history (scripts/lib/eval-history.mjs, plan B10): Calculate
+//                / Enter / Copy record a full entry (never typing, never with
+//                history.enabled off), search (case, Arabic-Indic digits,
+//                every word), filters, Today / Yesterday / This week /
+//                Earlier, windowed rows for 2,200 entries, Restore (inputs,
+//                tax mode, the current language), Use result, Pin, Note,
+//                Delete with a 5 s Undo, Clear all keeping pinned entries,
+//                the desktop adapter (store_save_if, export_file)
+//   B.sign-toggle the ± key on every signed Percentage field and Date amount
+//   C.history-*  newer never written (entries kept in memory and shown),
+//                corrupt or a dropped entry backed up then read-only, a new
+//                history only on a confirmed reset, too large and unreadable
+//                then Retry, a quota failure keeping every entry with an
+//                Export banner, two windows recording at once with no lost
+//                write, pinned entries never evicted, the export / import
+//                round trip and the CSV export
 //   B/C.mutant.* each important rule broken by a one-line mutant that the
 //                same test must catch
 // Slice D proves that each static rule actually fires, so a passing build

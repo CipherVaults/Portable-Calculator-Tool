@@ -18,8 +18,10 @@
 // and the copied text are engine English, shown as is until the translated
 // catalogs (M9a); every other word comes from the catalog.
 //
-// History: Calculate, Enter and Copy record through PCalc.history (a queue
-// until M3); live updates never record. Per-card sequence counters keep a
+// History: Calculate, Enter and Copy record through PCalc.history (the
+// history store since M3); live updates never record. restore(entry) (the
+// History panel) puts an entry's inputs (and tax mode) back into its card,
+// which opens, computes again in the current language and takes focus. Per-card sequence counters keep a
 // slower answer from overwriting a newer keystroke or a Clear. Field
 // values and the tax mode live in `model` for the session, so leaving the
 // route and coming back (or a language change) keeps them.
@@ -47,13 +49,16 @@
     tip: { op: "percent.tip", fields: [["tipBill", "bill", "100"], ["tipPercent", "tipPercent", "20"], ["tipPeople", "people", null]], nums: ["tipAmount", "totalBill", "perPerson"], texts: ["tipText", "totalText", "perPersonText", "label", "liveResult", "copyText"] }
   });
   const FIELD_IDS = Object.freeze(KEYS.flatMap((k) => CARDS[k].fields.map((f) => f[0])));
+  // Fields that accept a negative value (percent-core refuses a negative
+  // bill, tip % or people count).
+  const SIGNED = Object.freeze(FIELD_IDS.filter((id) => !["tipBill", "tipPercent", "tipPeople"].includes(id)));
   // The default formula's line count per card (catalog percent.formula.<key>.<n>).
   const LINES = Object.freeze({ change: 1, percent: 1, what: 1, discount: 2, base: 1, markup: 3, tax: 2, tip: 3 });
   // Engine error fields that have their own wording (percent.error.<field>).
   const ERROR_FIELDS = Object.freeze(["originalValue", "total", "percent", "cost", "sellingPrice", "ratePercent", "bill", "tipPercent", "people"]);
 
   // The session model (see the header).
-  const model = { fields: { tipPeople: "1" }, taxMode: "add" };
+  const model = { fields: { tipPeople: "1" }, taxMode: "add", restoreKey: null };
 
   let m = null; // the mounted view, or null
 
@@ -439,6 +444,8 @@
     }
     const label = byId("taxAmountLabel");
     if (label) label.textContent = m.t("percent.field.taxAmount." + model.taxMode);
+    const sign = byId("taxAmountSign");
+    if (sign) sign.setAttribute("aria-label", m.t("field.sign", { field: m.t("percent.field.taxAmount." + model.taxMode) }));
     const input = byId("taxAmount");
     if (input) input.setAttribute("placeholder", m.t("percent.example", { value: model.taxMode === "extract" ? "115" : "100" }));
     return recompute === false ? Promise.resolve() : update("tax");
@@ -480,11 +487,14 @@
     return el("input", { className: "input", attrs });
   }
 
+  // A field that takes a negative value has a ± key (sign-toggle.js): the
+  // iPhone decimal keypad has no minus.
   function field(id, example) {
     const labelKey = id === "taxAmount" ? "percent.field.taxAmount." + model.taxMode : "percent.field." + id;
+    const input = numberInput(id, example);
     return el("div", { className: "tool-field" }, [
       el("label", { className: "field-label", text: m.t(labelKey), attrs: { for: id, id: id + "Label" } }),
-      numberInput(id, example)
+      SIGNED.includes(id) ? ns.signToggle.wrap(input, m.t("field.sign", { field: m.t(labelKey) })) : input
     ]);
   }
 
@@ -601,6 +611,12 @@
     bind(root);
     setTaxMode(model.taxMode, false);
     const mine = m;
+    if (model.restoreKey) {
+      const key = model.restoreKey;
+      model.restoreKey = null;
+      m.layout.expand(key);
+      window.setTimeout(() => revealCard(mine, key), 0);
+    }
     m.ready = (async () => {
       await Promise.resolve();
       if (mine !== m) return;
@@ -623,6 +639,33 @@
     m.say.cancel();
     m.layout.destroy();
     m = null;
+  }
+
+  // A restored card comes into view and its title takes focus.
+  function revealCard(mine, key) {
+    if (mine !== m) return;
+    const card = byId("card-" + key);
+    const title = byId("card-" + key + "-title");
+    if (!card || !title) return;
+    title.setAttribute("tabindex", "-1");
+    title.focus({ preventScroll: true });
+    if (typeof card.scrollIntoView === "function") card.scrollIntoView({ block: "start" });
+  }
+
+  // History restore (see the header): {inputA, inputB, inputC?, mode?}
+  // into the session model; the next render (the panel navigates here)
+  // shows and computes them.
+  function restore(entry) {
+    const key = entry && entry.calculator;
+    const i = entry && entry.inputs && typeof entry.inputs === "object" ? entry.inputs : null;
+    if (!i || !KEYS.includes(key)) return false;
+    const names = ["inputA", "inputB", "inputC"];
+    CARDS[key].fields.forEach(([id], n) => {
+      if (typeof i[names[n]] === "string") model.fields[id] = i[names[n]];
+    });
+    if (key === "tax") model.taxMode = i.mode === "extract" ? "extract" : "add";
+    model.restoreKey = key;
+    return true;
   }
 
   // Settings > Percentage > Layout > Reset card order & expand all.
@@ -663,6 +706,7 @@
     KEYS,
     render,
     leave,
+    restore,
     resetLayout,
     settingsPanels,
     ready: () => (m ? m.ready : Promise.resolve()),

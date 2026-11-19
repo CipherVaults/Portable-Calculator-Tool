@@ -10,7 +10,7 @@
     "aria-describedby", "aria-expanded", "aria-controls", "aria-current",
     "aria-pressed", "aria-selected", "aria-orientation", "aria-disabled", "aria-atomic",
     "aria-invalid", "min", "max", "step", "maxlength", "placeholder", "inputmode",
-    "autocomplete", "spellcheck", "enterkeyhint",
+    "autocomplete", "spellcheck", "enterkeyhint", "accept",
     "data-check", "data-state", "data-route", "data-tab", "data-doc", "data-value",
     "data-card", "data-date", "data-focus-key"
   ]);
@@ -94,5 +94,29 @@
   // Engine English as one left-to-right run (a node list for show()/el()).
   const ltrNodes = (text) => [el("bdi", { className: "ltr", text: String(text), attrs: { dir: "ltr" } })];
 
-  window.PCalc.dom = Object.freeze({ el, byId, show, setAttr, flag, value, ltr, ltrValue, withValues, ltrNodes });
+  // Hands the user a file (an export, plan B10): the text as a Blob behind
+  // a temporary object URL on a hidden <a download>, revoked a little
+  // later. The link only ever holds a blob: URL this function made. Returns
+  // false where the browser cannot (no Blob or object URLs).
+  function download(text, fileName, type) {
+    try {
+      const U = window.URL;
+      if (typeof Blob !== "function" || !U || typeof U.createObjectURL !== "function") return false;
+      const url = String(U.createObjectURL(new Blob([String(text)], { type: type + ";charset=utf-8" })));
+      if (!/^blob:/.test(url)) return false;
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = String(fileName);
+      a.className = "sr-only";
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => U.revokeObjectURL(url), 60000);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  window.PCalc.dom = Object.freeze({ el, byId, show, setAttr, flag, value, ltr, ltrValue, withValues, ltrNodes, download });
 })();

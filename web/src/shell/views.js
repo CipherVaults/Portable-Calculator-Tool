@@ -77,6 +77,21 @@
     );
   }
 
+  // Settings > History: history.enabled controls recording (plan B10).
+  function historySettings(ctx) {
+    const t = ctx.t;
+    const box = el("input", { attrs: { id: "historyEnabled", type: "checkbox", "aria-describedby": "historyEnabledNote" } });
+    box.checked = ctx.settings.history.enabled !== false;
+    box.addEventListener("change", () => {
+      ctx.settings.history.enabled = box.checked;
+      ctx.saveSettings();
+    });
+    return panel(t("settings.history"), [
+      el("label", { className: "choice check-row", attrs: { for: "historyEnabled" } }, [box, el("span", { text: t("settings.history.enabled") })]),
+      el("p", { className: "hint", text: t("settings.history.note"), attrs: { id: "historyEnabledNote" } })
+    ], { id: "settingsHistory" });
+  }
+
   function settings(ctx) {
     const t = ctx.t;
     const f = ns.format;
@@ -111,6 +126,7 @@
         el("p", { className: "sample", attrs: { id: "formatSample", dir: "auto" } }, withValues(sample)),
         el("p", { className: "hint", text: t("settings.language.note") })
       ], { id: "settingsLanguage" }),
+      historySettings(ctx),
       panel(t("settings.storage"), [
         el("p", { className: "status", text: t("settings.storage.kind." + ctx.store.kind) }),
         persistNote,

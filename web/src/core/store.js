@@ -22,6 +22,15 @@
 // write, a BroadcastChannel("pcalc") notice "<name>-changed" tells the other
 // tabs to reload it.
 //
+// saveIf(name, expected, text) is the compare-and-save every history write
+// uses (plan B10, M3; the desktop's store_save_if): the stored value is
+// read and replaced in ONE readwrite transaction, and only while it is
+// still exactly `expected` (the canonical text this tab last read or wrote;
+// null = nothing stored). Anything else answers "conflict" and writes
+// nothing; the caller reads again and re-applies its operations, so two
+// tabs or windows recording at once never overwrite each other's entries
+// (IndexedDB runs readwrite transactions on one store one at a time).
+//
 // Without IndexedDB (some private modes, a blocked database) the store
 // runs in memory and the shell shows a banner: nothing is saved.
 (function () {
@@ -116,6 +125,29 @@
         t.objectStore(STORE).delete(key);
         await done(t);
       },
+      // Compare-and-put in one transaction, with callbacks only (no await
+      // between the read and the write). Resolves false on a mismatch.
+      async putIf(key, expected, value) {
+        const t = tx("readwrite");
+        const s = t.objectStore(STORE);
+        let mismatch = false;
+        const g = s.get(key);
+        g.onsuccess = () => {
+          const current = g.result === undefined ? null : g.result;
+          if (current === expected) s.put(value, key);
+          else {
+            mismatch = true;
+            t.abort();
+          }
+        };
+        try {
+          await done(t);
+        } catch (err) {
+          if (mismatch) return false;
+          throw err;
+        }
+        return true;
+      },
       // One transaction: .bak.3 = .bak.2, .bak.2 = .bak.1, .bak.1 = entry.
       async rotate(name, entry, same) {
         const t = tx("readwrite");
@@ -147,6 +179,12 @@
       async del(key) {
         map.delete(key);
       },
+      async putIf(key, expected, value) {
+        const current = map.has(key) ? map.get(key) : null;
+        if (current !== expected) return false;
+        map.set(key, value);
+        return true;
+      },
       async rotate(name, entry, same) {
         const keys = Array.from({ length: BACKUPS }, (_, i) => name + ".bak." + (i + 1));
         if (map.has(keys[0]) && same(map.get(keys[0]))) return false;
@@ -176,6 +214,10 @@
   function createDocStore(backend, engine, bus, now) {
     const readOnly = new Map();
     const loaded = new Set();
+    // Per document, the raw stored text behind the canonical text a load
+    // or write last saw (a valid document stored in another key order or
+    // spacing still matches what the caller read: saveIf compares raw).
+    const seen = new Map();
     const clock = now || (() => Date.now());
 
     function outcome(name, status, extra) {
@@ -223,7 +265,11 @@
       if (env === null || (env.ok !== "true" && env.ok !== "false")) return outcome(name, "unvalidated");
       if (env.ok === "true") {
         const r = env.result;
-        if (r.status === "ok") return outcome(name, "ok", { doc: JSON.stringify(r.doc) });
+        if (r.status === "ok") {
+          const doc = JSON.stringify(r.doc);
+          seen.set(name, { raw, canonical: doc });
+          return outcome(name, "ok", { doc });
+        }
         if (r.status === "newer") return outcome(name, "newer", { schemaVersion: r.schemaVersion });
         return outcome(name, "unvalidated");
       }
@@ -240,24 +286,53 @@
       return outcome(name, "corrupt", { backup: b, field: env.error.field === undefined ? null : env.error.field });
     }
 
+    // The canonical text to write, or {code} when it must not be written.
+    async function prepare(name, text) {
+      if (!Object.prototype.hasOwnProperty.call(DOCS, name)) return { code: "unknown_doc" };
+      if (!loaded.has(name)) await load(name);
+      if (readOnly.has(name)) return { code: "read_only" };
+      const env = await validate(name, String(text));
+      if (env === null) return { code: "invalid" };
+      if (env.ok !== "true") return { code: env.error && env.error.code === "request_too_large" ? "too_large" : "invalid" };
+      if (env.result.status !== "ok") return { code: "invalid" };
+      const canonical = JSON.stringify(env.result.doc);
+      if (utf8Length(canonical) > DOCS[name].writeCap) return { code: "too_large" };
+      return { canonical };
+    }
+    const writeCode = (err) => (err && err.name === "QuotaExceededError" ? "quota" : "write_failed");
+
     // -> {ok: true, text} or {ok: false, code: read_only|invalid|too_large|quota|write_failed}
     async function save(name, text) {
-      if (!Object.prototype.hasOwnProperty.call(DOCS, name)) return { ok: false, code: "unknown_doc" };
-      if (!loaded.has(name)) await load(name);
-      if (readOnly.has(name)) return { ok: false, code: "read_only" };
-      const env = await validate(name, String(text));
-      if (env === null) return { ok: false, code: "invalid" };
-      if (env.ok !== "true") return { ok: false, code: env.error && env.error.code === "request_too_large" ? "too_large" : "invalid" };
-      if (env.result.status !== "ok") return { ok: false, code: "invalid" };
-      const canonical = JSON.stringify(env.result.doc);
-      if (utf8Length(canonical) > DOCS[name].writeCap) return { ok: false, code: "too_large" };
+      const p = await prepare(name, text);
+      if (p.code) return { ok: false, code: p.code };
       try {
-        await backend.put(name, canonical);
+        await backend.put(name, p.canonical);
       } catch (err) {
-        return { ok: false, code: err && err.name === "QuotaExceededError" ? "quota" : "write_failed" };
+        return { ok: false, code: writeCode(err) };
       }
+      seen.set(name, { raw: p.canonical, canonical: p.canonical });
       if (bus) bus.post(name + "-changed");
-      return { ok: true, text: canonical };
+      return { ok: true, text: p.canonical };
+    }
+
+    // Compare-and-save (see the header): as save(), but only while the
+    // stored value is still `expected` (null = none); else "conflict".
+    async function saveIf(name, expected, text) {
+      const p = await prepare(name, text);
+      if (p.code) return { ok: false, code: p.code };
+      const want = expected === undefined || expected === null ? null : String(expected);
+      const last = seen.get(name);
+      const raw = want !== null && last && last.canonical === want ? last.raw : want;
+      let wrote;
+      try {
+        wrote = await backend.putIf(name, raw, p.canonical);
+      } catch (err) {
+        return { ok: false, code: writeCode(err) };
+      }
+      if (!wrote) return { ok: false, code: "conflict" };
+      seen.set(name, { raw: p.canonical, canonical: p.canonical });
+      if (bus) bus.post(name + "-changed");
+      return { ok: true, text: p.canonical };
     }
 
     // "Start fresh" (the UI confirms first): backs the stored value up,
@@ -292,6 +367,7 @@
         }
       }
       readOnly.delete(name);
+      seen.delete(name);
       if (bus) bus.post(name + "-changed");
       return { ok: true, backup: b };
     }
@@ -300,6 +376,7 @@
       kind: backend.kind,
       load,
       save,
+      saveIf,
       clear,
       isReadOnly: (name) => readOnly.has(name)
     });

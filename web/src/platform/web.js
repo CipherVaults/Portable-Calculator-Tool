@@ -57,6 +57,13 @@
     engineInfo: () => ({ kind: "wasm", sha256: engine === null ? null : engine.sha256 }),
     openStore: () => window.PCalc.store.openWebStore((op, req) => engine.call(op, req), window.PCalc.bus),
     persist: () => window.PCalc.store.persist(),
+    // A Blob download named Portable-Calculator-<stamp>.<kind> (the
+    // browser's own download folder or share sheet); the History panel
+    // also offers "Copy export to clipboard" (iOS home-screen apps).
+    exportFile: async (kind, stamp, text) => {
+      const ok = window.PCalc.dom.download(text, "Portable-Calculator-" + stamp + "." + kind, kind === "csv" ? "text/csv" : "application/json");
+      return ok ? { ok: true, path: null } : { ok: false, code: "export_failed" };
+    },
     estimate: () => window.PCalc.store.estimate(),
     isSmokeTest: async () => false,
     reportSmoke: async () => undefined

@@ -156,7 +156,7 @@ export function dateBTests(web, engine) {
       await tick(40);
       const picked = cellOf(app, "infoCalGrid", "2026-11-10");
       const selected = app.byId("infoDate").value === "2026-11-10" && picked.classList.contains("selected") && attr(picked, "aria-pressed") === "true" && attr(picked, "aria-label").endsWith(", selected");
-      const noHistory = app.PCalc.history.pending().length === 0;
+      const noHistory = app.PCalc.history.recorded().length === 0;
       cellOf(app, "infoCalGrid", "2026-12-01").click();
       await until(() => app.byId("infoCalTitle").textContent === "December 2026", 2000);
       const moved = app.byId("infoDate").value === "2026-12-01";
@@ -573,7 +573,7 @@ export function dateBTests(web, engine) {
         }
       });
       await settle(app);
-      const n = () => app.PCalc.history.pending().length;
+      const n = () => app.PCalc.history.recorded().length;
       input(app, "betweenStart", "2024-01-01");
       input(app, "betweenEnd", "2024-12-31");
       cellOf(app, "infoCalGrid", "2026-11-10").click();
@@ -586,7 +586,7 @@ export function dateBTests(web, engine) {
       await until(() => n() === 2, 1500);
       app.byId("infoCopyBtn").click();
       await until(() => n() === 3, 1500);
-      const entries = app.PCalc.history.pending();
+      const entries = app.PCalc.history.recorded();
       const shape = entries[0].tool === "date" && entries[0].calculator === "between" && entries[0].inputs.startDate === "2024-01-01" && entries[2].calculator === "info" && entries[0].timestampMs === NOW;
       const ok = live && n() === 3 && shape;
       return { ok, detail: JSON.stringify({ live, count: n(), first: entries[0] }) };

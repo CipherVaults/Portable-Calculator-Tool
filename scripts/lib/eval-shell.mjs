@@ -13,6 +13,7 @@ import { bootApp, fakeTauri, readSources } from "./web-harness.mjs";
 import { catalogProblems, loadModules, unitResults, usageProblems } from "../check-i18n.mjs";
 import { DATE_MUTANTS, dateBTests, dateCTests } from "./eval-date.mjs";
 import { PERCENT_MUTANTS, percentBTests, percentCTests } from "./eval-percent.mjs";
+import { HISTORY_MUTANTS, historyBTests, historyCTests } from "./eval-history.mjs";
 
 const RLO = "‮";
 
@@ -773,7 +774,7 @@ export const MUTANTS = [
   ["B", "quick-switch-back", "src/shell/shell.js", "      if (route !== r) previous = route;\n", "\n"],
   ["C", "ui-newer-banner", "src/shell/shell.js", 'if (o.status === "newer") {', "if (false) {"],
   ["C", "corrupt-backup-first-then-read-only", "src/core/store.js", "const wrote = await backend.rotate(name, entry, (old) => old && sameRaw(old.raw, raw));", "const wrote = false && entry;"],
-  ["C", "corrupt-backup-first-then-read-only", "src/core/store.js", 'if (readOnly.has(name)) return { ok: false, code: "read_only" };', ""],
+  ["C", "corrupt-backup-first-then-read-only", "src/core/store.js", 'if (readOnly.has(name)) return { code: "read_only" };', ""],
   ["C", "too-large-is-read-only-never-corrupt", "src/core/store.js", 'if (code === "request_too_large") return outcome(name, "tooLarge");', ""],
   ["C", "newer-is-read-only-without-backup", "src/core/store.js", 'if (r.status === "newer") return outcome(name, "newer", { schemaVersion: r.schemaVersion });', ""],
   ["C", "backups-keep-the-newest-three", "src/core/store.js", "const BACKUPS = 3;", "const BACKUPS = 4;"],
@@ -791,11 +792,16 @@ export async function runShellSlices({ web, engine, check, skip }) {
     return;
   }
   const suites = {
-    B: { ...B_tests(web, engine), ...dateBTests(web, engine), ...percentBTests(web, engine) },
-    C: { ...C_tests(web, engine), ...dateCTests(web, engine), ...percentCTests(web, engine) }
+    B: { ...B_tests(web, engine), ...dateBTests(web, engine), ...percentBTests(web, engine), ...historyBTests(web, engine) },
+    C: { ...C_tests(web, engine), ...dateCTests(web, engine), ...percentCTests(web, engine), ...historyCTests(web, engine) }
   };
+  // PCALC_EVAL_ONLY=<regex> runs only the matching B/C tests and their
+  // mutants, PCALC_EVAL_NO_MUTANTS=1 skips the mutants (development aids;
+  // CI and the verification list run everything).
+  const only = process.env.PCALC_EVAL_ONLY ? new RegExp(process.env.PCALC_EVAL_ONLY) : null;
   for (const [slice, tests] of Object.entries(suites)) {
     for (const [name, fn] of Object.entries(tests)) {
+      if (only && !only.test(name)) continue;
       let r;
       try {
         r = await fn({});
@@ -806,7 +812,8 @@ export async function runShellSlices({ web, engine, check, skip }) {
     }
   }
   const seen = new Map();
-  for (const [slice, test, file, from, to] of [...MUTANTS, ...DATE_MUTANTS, ...PERCENT_MUTANTS]) {
+  for (const [slice, test, file, from, to] of [...MUTANTS, ...DATE_MUTANTS, ...PERCENT_MUTANTS, ...HISTORY_MUTANTS]) {
+    if ((only && !only.test(test)) || process.env.PCALC_EVAL_NO_MUTANTS) continue;
     const original = readFileSync(join(web, file), "utf8");
     const base = `${slice}.mutant.${test}.${file.split("/").pop()}`;
     seen.set(base, (seen.get(base) || 0) + 1);

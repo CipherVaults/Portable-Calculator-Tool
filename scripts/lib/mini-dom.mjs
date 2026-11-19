@@ -127,6 +127,14 @@ class Node {
       this.childNodes.push(node);
     }
   }
+  remove() {
+    if (this.parentNode) {
+      const kids = this.parentNode.childNodes;
+      const i = kids.indexOf(this);
+      if (i >= 0) kids.splice(i, 1);
+      this.parentNode = null;
+    }
+  }
   appendChild(node) {
     this.append(node);
     return node;
@@ -331,6 +339,11 @@ class Element extends Node {
       this.dispatchEvent(new Event("change"));
     }
     if (proceed && this.localName === "a" && this.getAttribute("href")) this.ownerDocument.defaultView.location.assignHash(this.getAttribute("href"));
+    // A download link (dom.download): recorded with its Blob for the tests.
+    const win = this.ownerDocument.defaultView;
+    if (proceed && this.localName === "a" && typeof this.download === "string" && this.download && typeof this.href === "string" && win.__downloads) {
+      win.__downloads.push({ name: this.download, href: this.href, blob: win.__blobs.get(this.href) || null });
+    }
   }
   getBoundingClientRect() {
     return { x: 0, y: 0, width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0 };
@@ -498,20 +511,45 @@ class FakeRequest {
   }
 }
 
+// Readwrite transactions on one database run one at a time, as in
+// browsers (their scopes overlap: there is one object store): a later one
+// starts, and takes its snapshot, only when the earlier ones have committed
+// or aborted. Its requests wait until then. Readonly transactions read the
+// committed data at their creation.
 class FakeTransaction {
   constructor(db, mode) {
     this.db = db;
     this.mode = mode;
     this.pending = 0;
     this.state = "active";
-    this.staged = new Map(db.data);
     this.wrote = false;
     this.error = null;
     this.oncomplete = null;
     this.onerror = null;
     this.onabort = null;
     this.queue = Promise.resolve();
+    this.waiting = [];
+    const record = db.record;
+    if (!record.writers) record.writers = [];
+    this.started = mode !== "readwrite" || record.writers.length === 0;
+    if (mode === "readwrite") record.writers.push(this);
+    this.staged = this.started ? new Map(db.data) : null;
     this.scheduleCommit();
+  }
+  start() {
+    this.started = true;
+    this.staged = new Map(this.db.data);
+    const runs = this.waiting;
+    this.waiting = [];
+    for (const run of runs) setTimeout(run, 0);
+    this.scheduleCommit();
+  }
+  release() {
+    if (this.mode !== "readwrite") return;
+    const writers = this.db.record.writers;
+    const i = writers.indexOf(this);
+    if (i >= 0) writers.splice(i, 1);
+    if (i === 0 && writers.length > 0) writers[0].start();
   }
   objectStore(name) {
     if (!this.db.stores.has(name)) throw domError("NotFoundError", `no object store ${name}`);
@@ -520,7 +558,11 @@ class FakeTransaction {
       if (tx.state !== "active") throw domError("TransactionInactiveError", "transaction is not active");
       const r = new FakeRequest(tx);
       tx.pending++;
-      setTimeout(() => {
+      const run = () => {
+        if (!tx.started) {
+          tx.waiting.push(run);
+          return;
+        }
         tx.pending--;
         if (tx.state !== "active") return;
         try {
@@ -538,7 +580,8 @@ class FakeTransaction {
           return;
         }
         tx.scheduleCommit();
-      }, 0);
+      };
+      setTimeout(run, 0);
       return r;
     };
     const factory = this.db.factory;
@@ -573,7 +616,7 @@ class FakeTransaction {
   }
   scheduleCommit() {
     setTimeout(() => {
-      if (this.state !== "active" || this.pending > 0) return;
+      if (this.state !== "active" || this.pending > 0 || !this.started) return;
       if (this.mode === "readwrite" && this.db.factory.quotaAtCommit && this.wrote) {
         // Chromium's way: every request succeeded, the commit fails.
         this.abort(domError("QuotaExceededError", "simulated quota at commit"));
@@ -584,12 +627,14 @@ class FakeTransaction {
         this.db.data = this.staged;
         this.db.factory.writes++;
       }
+      this.release();
       if (typeof this.oncomplete === "function") this.oncomplete({});
     }, 0);
   }
   abort(err) {
     if (this.state !== "active") return;
     this.state = "aborted";
+    this.release();
     this.error = err || domError("AbortError", "aborted");
     // Only "abort" fires at the transaction; a request's "error" (above)
     // has already reached its onerror.
@@ -843,6 +888,21 @@ export function createWindow(opts = {}) {
     }
   });
   win.Event = Event;
+  // Blobs and object URLs (exports): every URL made is kept in __blobs and
+  // every download link clicked is listed in __downloads.
+  win.Blob = Blob;
+  win.Response = Response;
+  win.__blobs = new Map();
+  win.__downloads = origin.downloads || (origin.downloads = []);
+  let blobCount = 0;
+  win.URL = {
+    createObjectURL(blob) {
+      const url = "blob:https://example.test/" + ++blobCount;
+      win.__blobs.set(url, blob);
+      return url;
+    },
+    revokeObjectURL() {}
+  };
   // A settable clock (opts.now = ms): Date.now() and new Date() read it;
   // new Date(y, m, ...) and every other use stay real. Timers stay real.
   const clock = { ms: opts.now === undefined ? null : Number(opts.now) };

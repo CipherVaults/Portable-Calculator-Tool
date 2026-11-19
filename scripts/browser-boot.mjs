@@ -101,6 +101,22 @@
 //              "175.00% decrease" keep their order); each case is a
 //              layout check (and a screenshot with --shots).
 //              --percent-only runs just this group
+//   history    the History panel (plan B10, M3) at 390 px with 2,200
+//              entries (2,000 unpinned + 200 pinned) seeded into IndexedDB:
+//              the panel's render, a search keystroke and Show more timed
+//              in the page under 4x CPU throttling (a phone), each within
+//              its stated budget (HISTORY_BUDGET_MS); layout at 360, 390 and
+//              440 px (pane open on History, a note being edited, Clear all
+//              asked, ar-XB, an import preview, both tools with their ±
+//              keys); Export JSON and CSV as real downloads (a file named
+//              Portable-Calculator-<yyyymmdd-hhmmss>.json lands in the
+//              download folder holding the export); "Copy export to
+//              clipboard" read back from the clipboard; Import through the
+//              file input (DevTools sets the file): "N new · M duplicates ·
+//              K rejected", then one write; Restore by a real tap; a second
+//              tab follows a recorded entry over BroadcastChannel; the ± key
+//              by a real tap keeps the field's focus and is a 44 px target.
+//              --history-only runs just this group
 //   upgrade    build N+1 (a copy of web/ with one changed byte, built into
 //              target/browser-boot/) on the same origin as build N: boot N
 //              and let its service worker take over, switch the server to
@@ -120,14 +136,14 @@
 //
 //   node scripts/browser-boot.mjs [--dist <dir>] [--edge <path>] [--runs N]
 //                                 [--json <path>] [--shots <dir>] [--skip-upgrade]
-//                                 [--date-only] [--percent-only]
+//                                 [--date-only] [--percent-only] [--history-only]
 //
 // Edge: --edge, else $PCALC_EDGE, else the usual install paths. WebKit
 // (Safari/iOS) and Gecko (Firefox) are not driven here; they stay manual
 // checks on real devices (plan B15 "Manual"). WebView2 is the desktop smoke
 // test (cargo run -p portable-calculator-tool -- --smoke-test).
 import { spawn, spawnSync } from "node:child_process";
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -153,6 +169,7 @@ function parseArgs(argv) {
     else if (a === "--skip-upgrade") opts.upgrade = false;
     else if (a === "--date-only") opts.dateOnly = true;
     else if (a === "--percent-only") opts.percentOnly = true;
+    else if (a === "--history-only") opts.historyOnly = true;
     else if (a === "--edge") opts.edge = resolve(argv[++i] || fail("--edge needs a path"));
     else if (a === "--json") opts.json = resolve(argv[++i] || fail("--json needs a path"));
     else if (a === "--runs") {
@@ -1256,6 +1273,254 @@ const P_ORDER = `[...document.getElementById("percentCards").children].map((c) =
 const P_CARDS = ["change", "percent", "what", "discount", "base", "markup", "tax", "tip"];
 const P_LINES = (key) => `[...document.querySelectorAll("#${key}Result .result-main, #${key}Result .result-sub")].map((n) => n.textContent)`;
 
+// The History panel (plan B10, M3), its budgets, export, import and the ± key.
+// Under 4x CPU throttling (a mid-range phone): about 60, 60 and 40 ms on
+// one unthrottled desktop core, with room for a slower CI runner.
+const HISTORY_BUDGET_MS = { render: 250, search: 250, more: 150 };
+const SEED_HISTORY = `(async () => {
+  const NOW = Date.now();
+  const entries = [];
+  let pinned = 0;
+  let unpinned = 0;
+  for (let i = 0; pinned + unpinned < 2200; i++) {
+    const pin = i % 11 === 3 && pinned < 200;
+    if (!pin && unpinned >= 2000) continue;
+    if (pin) pinned++;
+    else unpinned++;
+    const ts = NOW - 60000 - i * 41 * 60000;
+    const id = "h-" + ts + "-" + i;
+    entries.push(i % 2 === 0
+      ? { id, timestampMs: ts, tool: "percent", calculator: "change", calculatorLabel: "Percentage Change", inputs: { inputA: String(100 + i), inputB: String(200 + i) },
+          expressionText: "", inputsText: (100 + i) + " → " + (200 + i), resultText: "Result " + i + " increase", copyText: "Result " + i, pinned: pin, note: i % 50 === 0 ? "Note " + i : null, engine: "percent-core 2.3.0" }
+      : { id, timestampMs: ts, tool: "date", calculator: "info", calculatorLabel: "Date Info", inputs: { date: "2026-11-19" }, expressionText: "",
+          inputsText: "2026-11-19", resultText: "Date result " + i, copyText: "Date result " + i, pinned: pin, note: null, engine: "date-core 1.0.0" });
+  }
+  const doc = JSON.stringify({ schemaVersion: 1, entries });
+  await new Promise((done, failed) => {
+    const r = indexedDB.open("pcalc");
+    r.onerror = () => failed(r.error);
+    r.onsuccess = () => {
+      const db = r.result;
+      const tx = db.transaction("docs", "readwrite");
+      tx.objectStore("docs").put(doc, "history");
+      tx.oncomplete = () => { db.close(); done(); };
+      tx.onerror = () => failed(tx.error);
+    };
+  });
+  return { count: entries.length, pinned, bytes: doc.length };
+})()`;
+// Runs `body` in the page and forces style and layout of the panel before
+// the clock stops, so the time is what a user waits for.
+const TIMED = (body) => `(() => {
+  const t0 = performance.now();
+  ${body}
+  const list = document.getElementById("historyList");
+  void (list && list.getBoundingClientRect().height);
+  const rows = document.querySelectorAll(".hist-row");
+  void (rows.length && rows[rows.length - 1].getBoundingClientRect().bottom);
+  return { ms: Math.round((performance.now() - t0) * 10) / 10, rows: rows.length };
+})()`;
+let historyTimings = null;
+
+async function historyChecks(edgePath, url, shots) {
+  const edge = await launchEdge(edgePath, []);
+  const saved = [];
+  const downloads = mkdtempSync(join(tmpdir(), "pcalc-dl-"));
+  const timings = {};
+  try {
+    await edge.cdp.send("Browser.setDownloadBehavior", { behavior: "allow", downloadPath: downloads, eventsEnabled: true });
+    const origin = new URL(url).origin;
+    await edge.cdp.send("Browser.grantPermissions", { origin, permissions: ["clipboardReadWrite", "clipboardSanitizedWrite"] });
+    const { tab } = await openPage(edge, url + "#/percent", { keepOpen: true });
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    const shot = async (id) => {
+      if (!shots) return;
+      const path = join(shots, `history-${id.replace(/[^a-z0-9-]+/gi, "_")}.png`);
+      await tab.screenshot(path);
+      saved.push(path);
+    };
+    const record = async (id, extra = () => null) => {
+      const l = await json(tab, LAYOUT);
+      const more = await extra(l);
+      const ok = l.scrollWidth <= l.vw && l.outside.length === 0 && l.small.length === 0 && l.clipped.length === 0 && l.broken.length === 0 && !more;
+      expect(`history.layout.${id}`, ok, JSON.stringify({ scrollWidth: l.scrollWidth, vw: l.vw, outside: l.outside.slice(0, 4), small: l.small.slice(0, 4), clipped: l.clipped.slice(0, 4), broken: l.broken.slice(0, 4), more }));
+      await shot(id);
+    };
+    const smallInputs = async () => {
+      const small = await json(tab, `[...document.querySelectorAll("#historyPanel input:not([type=file]), #historyPanel button")].filter((n) => { const r = n.getBoundingClientRect(); return r.width > 0 && r.height < 43.5; }).map((n) => n.id || n.className)`);
+      return small.length ? "small " + small.slice(0, 4).join(",") : null;
+    };
+    const openHistory = async () => {
+      const open = await tab.evaluate(`!document.getElementById("pane").hidden`);
+      if (!open) await tab.tap("#paneToggle");
+      await waitFor(tab, `document.getElementById("historyPanel") && !document.getElementById("pane").hidden`);
+      await wait(80);
+    };
+    const closePane = async () => {
+      await tab.evaluate(`(() => { const p = document.getElementById("pane"); if (!p.hidden) document.getElementById("paneClose").click(); return true; })()`);
+      await wait(80);
+    };
+
+    await tab.viewport(390, 844);
+    // ---- 2,200 entries: boot, first render, search, Show more (4x CPU) ----
+    const seeded = await json(tab, SEED_HISTORY);
+    await edge.cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 }, tab.sessionId);
+    // A new document (the same URL with only a hash would not reload).
+    const booted = await tab.navigate(url + "?seeded=1#/percent");
+    await waitFor(tab, `window.PCalc.historyStore.entries().length === 2200`, 8000);
+    timings.bootMs = booted.bootMs;
+    await tab.tap("#paneToggle");
+    await waitFor(tab, `document.getElementById("historyPanel")`);
+    await wait(100);
+    // The panel's render: leave the tab and come back (the tab renders it).
+    await tab.evaluate(`document.getElementById("paneTab-countdowns").click(); true`);
+    await wait(100);
+    const render = await json(tab, TIMED(`document.getElementById("paneTab-history").click();`));
+    const search = await json(tab, TIMED(`const s = document.getElementById("historySearch"); s.value = "result 7"; s.dispatchEvent(new Event("input"));`));
+    await tab.evaluate(`(() => { const s = document.getElementById("historySearch"); s.value = ""; s.dispatchEvent(new Event("input")); return true; })()`);
+    const more = await json(tab, TIMED(`document.getElementById("historyMore").click();`));
+    await edge.cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 }, tab.sessionId);
+    Object.assign(timings, { renderMs: render.ms, searchMs: search.ms, moreMs: more.ms, rows: render.rows, budget: HISTORY_BUDGET_MS, cpu: "4x throttled" });
+    const count = await tab.evaluate(`document.getElementById("historyCount").textContent`);
+    expect("history.2200-entries-loaded", seeded.count === 2200 && seeded.pinned === 200 && count === "2,200 entries" && booted.boot === "ok", JSON.stringify({ seeded, count, boot: booted.boot }));
+    expect("history.2200-render-within-budget", render.rows === 60 && render.ms <= HISTORY_BUDGET_MS.render, JSON.stringify(render) + ` budget ${HISTORY_BUDGET_MS.render} ms`);
+    expect("history.2200-search-within-budget", search.ms <= HISTORY_BUDGET_MS.search && search.rows > 0, JSON.stringify(search) + ` budget ${HISTORY_BUDGET_MS.search} ms`);
+    expect("history.2200-show-more-within-budget", more.rows === 120 && more.ms <= HISTORY_BUDGET_MS.more, JSON.stringify(more) + ` budget ${HISTORY_BUDGET_MS.more} ms`);
+
+    // ---- layout at 360 / 390 / 440, plus a note, Clear all and ar-XB ----
+    for (const w of [360, 390, 440]) {
+      await tab.viewport(w, 844);
+      await openHistory();
+      await record(`${w}.pane-history`, smallInputs);
+    }
+    await tab.viewport(390, 844);
+    await openHistory();
+    await tab.evaluate(`document.querySelector(".hist-row button[data-value='note']").click(); true`);
+    await wait(60);
+    await record("390.note-editing", async () => {
+      const n = await json(tab, `(() => { const i = document.getElementById("historyNoteInput"); return i ? { dir: i.dir, max: i.maxLength, focused: document.activeElement === i } : null; })()`);
+      return n && n.dir === "auto" && n.max === 200 && n.focused ? smallInputs() : "note input " + JSON.stringify(n);
+    });
+    await tab.evaluate(`document.getElementById("historyNoteCancel").click(); true`);
+    await tab.evaluate(`document.getElementById("historyClearBtn").click(); true`);
+    await wait(60);
+    await record("390.clear-asked", async () => {
+      const c = await json(tab, `({ keep: document.getElementById("historyKeepPinned").checked, text: document.getElementById("historyClearConfirm").textContent })`);
+      return c.keep && c.text === "Delete 2,000 entries" ? null : JSON.stringify(c);
+    });
+    await tab.evaluate(`document.getElementById("historyClearCancel").click(); true`);
+    await closePane();
+    await pickPseudo(tab, "ar-XB");
+    await goRoute(tab, "percent");
+    await openHistory();
+    await record("390.ar-XB", async () => ((await tab.evaluate(`document.documentElement.dir`)) === "rtl" ? smallInputs() : "not rtl"));
+    await closePane();
+    await pickPseudo(tab, "off");
+    await goRoute(tab, "percent");
+
+    // ---- Restore by a real tap ----
+    await openHistory();
+    const target = await json(tab, `(() => { const e = window.PCalc.historyStore.entries().find((x) => x.tool === "percent" && !x.pinned); return { id: e.id, a: e.inputs.inputA, b: e.inputs.inputB }; })()`);
+    await tab.tap(`li[data-value='${target.id}'] .hist-main`);
+    await waitFor(tab, `document.getElementById("changeOrig") && document.getElementById("changeOrig").value === ${JSON.stringify(target.a)}`);
+    await wait(100);
+    const restored = await json(tab, `({ a: document.getElementById("changeOrig").value, b: document.getElementById("changeNew").value, pane: document.getElementById("pane").hidden, focus: document.activeElement.id, live: document.getElementById("changeLive").textContent })`);
+    expect("history.restore-by-tap", restored.a === target.a && restored.b === target.b && restored.pane === true && restored.focus === "card-change-title" && restored.live.startsWith("→ ") && restored.live !== "→ —", JSON.stringify(restored));
+
+    // ---- the ± key by real taps ----
+    await tab.evaluate(`(() => { document.getElementById("changeOrig").scrollIntoView({ block: "center" }); return true; })()`);
+    await tab.tap("#changeOrig");
+    const sign = await json(tab, `(() => { const r = document.getElementById("changeOrigSign").getBoundingClientRect(); return { w: r.width, h: r.height }; })()`);
+    const beforeSign = await tab.evaluate(`document.getElementById("changeOrig").value`);
+    await tab.tap("#changeOrigSign");
+    await wait(150);
+    const afterSign = await json(tab, `({ value: document.getElementById("changeOrig").value, focus: document.activeElement.id, mode: document.getElementById("changeOrig").inputMode })`);
+    expect("history.sign-key-real-tap", afterSign.value === "-" + beforeSign && afterSign.focus === "changeOrig" && afterSign.mode === "decimal" && sign.w >= 44 && sign.h >= 44, JSON.stringify({ beforeSign, afterSign, sign }));
+    await tab.tap("#changeOrigSign");
+    await tab.evaluate(`document.activeElement.blur(); true`);
+    await wait(100);
+    await record("390.percent-with-sign-keys");
+    await goRoute(tab, "date");
+    await record("390.date-with-sign-keys", async () => {
+      const s = await json(tab, `[...document.querySelectorAll("#dateTool .sign-button")].map((b) => { const r = b.getBoundingClientRect(); return Math.min(r.width, r.height); })`);
+      return s.length === 4 && s.every((x) => x >= 44) ? null : "sign keys " + JSON.stringify(s);
+    });
+    await goRoute(tab, "percent");
+
+    // ---- Export JSON and CSV as real downloads ----
+    await openHistory();
+    const listDir = () => (existsSync(downloads) ? readdirSync(downloads).filter((n) => !n.endsWith(".crdownload")) : []);
+    const waitFile = async (re) => {
+      for (let i = 0; i < 100; i++) {
+        const f = listDir().find((n) => re.test(n));
+        if (f) return f;
+        await wait(50);
+      }
+      return null;
+    };
+    await tab.evaluate(`document.getElementById("historyExportJson").click(); true`);
+    const jsonName = await waitFile(/^Portable-Calculator-\d{8}-\d{6}\.json$/);
+    let exported = null;
+    try {
+      exported = jsonName ? JSON.parse(readFileSync(join(downloads, jsonName), "utf8")) : null;
+    } catch (_) {
+      exported = null;
+    }
+    const status = await tab.evaluate(`document.getElementById("historyStatus").textContent`);
+    expect("history.export-json-download", Boolean(exported) && exported.format === "portable-calculator-export" && exported.formatVersion === 1 && exported.history.entries.length === 2200 &&
+      Boolean(exported.countdowns) && Boolean(exported.settings) && status === "Downloaded " + jsonName && tab.logs.consoleErrors.length === 0,
+      JSON.stringify({ jsonName, status, entries: exported && exported.history.entries.length, errors: tab.logs.consoleErrors.slice(0, 2) }));
+    await tab.evaluate(`document.getElementById("historyExportCsv").click(); true`);
+    const csvName = await waitFile(/^Portable-Calculator-\d{8}-\d{6}.*\.csv$/);
+    const csv = csvName ? readFileSync(join(downloads, csvName)) : null;
+    expect("history.export-csv-download", Boolean(csv) && csv[0] === 0xef && csv[1] === 0xbb && csv[2] === 0xbf && csv.toString("utf8").split("\r\n").length === 2202, JSON.stringify({ csvName, lines: csv ? csv.toString("utf8").split("\r\n").length : 0 }));
+    // ---- Copy export to clipboard (the iOS home-screen fallback) ----
+    await tab.evaluate(`document.getElementById("historyExportCopy").focus(); document.getElementById("historyExportCopy").click(); true`);
+    await waitFor(tab, `document.getElementById("historyStatus").textContent.startsWith("Export copied")`);
+    const clip = await json(tab, `navigator.clipboard.readText().then((t) => { const j = JSON.parse(t); return { format: j.format, n: j.history.entries.length }; }, (e) => ({ error: String(e) }))`);
+    expect("history.export-clipboard-fallback", clip.format === "portable-calculator-export" && clip.n === 2200, JSON.stringify(clip));
+
+    // ---- Import: preview counts, then one write ----
+    const importFile = join(downloads, "import-test.json");
+    if (exported) {
+      const extra = exported.history.entries.slice(0, 3).map((e, i) => ({ ...e, id: "h-1000000000000-" + (900 + i), timestampMs: 1000000000000 + i, pinned: false }));
+      const bad = { ...exported.history.entries[5], tool: "standard", id: "h-1000000000000-999" };
+      writeFileSync(importFile, JSON.stringify({ ...exported, history: { schemaVersion: 1, entries: [...exported.history.entries.slice(0, 10), ...extra, bad] } }));
+    }
+    const { root } = await edge.cdp.send("DOM.getDocument", { depth: 0 }, tab.sessionId);
+    const { nodeId } = await edge.cdp.send("DOM.querySelector", { nodeId: root.nodeId, selector: "#historyImportFile" }, tab.sessionId);
+    await edge.cdp.send("DOM.setFileInputFiles", { nodeId, files: [importFile] }, tab.sessionId);
+    await waitFor(tab, `document.getElementById("historyImportSummary")`);
+    const summary = await tab.evaluate(`(document.getElementById("historyImportSummary") || { textContent: "" }).textContent`);
+    await record("390.import-preview", smallInputs);
+    await tab.tap("#historyImportConfirm");
+    await waitFor(tab, `document.getElementById("historyStatus").textContent.includes("imported")`, 5000);
+    const afterImport = await json(tab, `(async () => { const d = JSON.parse(await ${IDB_GET("history")}); return { n: d.entries.length, has: d.entries.some((e) => e.id === "h-1000000000000-900") }; })()`);
+    // At the 2,000 unpinned cap the three new entries (older than every
+    // other) are the ones evicted again: the document stays at 2,200, every
+    // pinned entry kept; the preview said so.
+    expect("history.import-preview-and-commit", summary === "3 new · 10 duplicates · 1 rejected" && afterImport.n === 2200, JSON.stringify({ summary, afterImport }));
+
+    // ---- A second tab follows a recorded entry (BroadcastChannel) ----
+    const second = await openPage(edge, url + "#/about", { keepOpen: true });
+    const other = second.tab;
+    await waitFor(other, `window.PCalc.historyStore.entries().length > 0`, 5000);
+    await closePane();
+    await tab.evaluate(`(() => { for (const [id, v] of [["discountPrice", "50"], ["discountPercent", "10"]]) { const n = document.getElementById(id); n.value = v; n.dispatchEvent(new Event("input", { bubbles: true })); } return true; })()`);
+    await waitFor(tab, `document.getElementById("discountLive").textContent.includes("45.00")`);
+    await tab.evaluate(`document.getElementById("discountCalcBtn").click(); true`);
+    const synced = await waitFor(other, `window.PCalc.historyStore.entries()[0].calculator === "discount" && window.PCalc.historyStore.entries()[0].resultText.includes("45.00")`, 5000);
+    expect("history.second-tab-follows", Boolean(synced), "second tab sees the new discount entry");
+    await other.close();
+  } finally {
+    await edge.close();
+    rmSync(downloads, { recursive: true, force: true });
+  }
+  console.log(`history timings: ${JSON.stringify(timings)}`);
+  historyTimings = timings;
+  return saved;
+}
+
 async function percentChecks(edgePath, url, shots) {
   const edge = await launchEdge(edgePath, []);
   const saved = [];
@@ -1300,10 +1565,10 @@ async function percentChecks(edgePath, url, shots) {
     expect("percent.discount-typed-text-only", disc.lines.join("|") === "Final: 63.99|Saved: 16.00" && disc.br === 0 && !disc.angle &&
       disc.formula.join("|") === "final = 79.99 × (1 − 20/100) = 63.99|saved = 79.99 × 20/100 = 16.00", JSON.stringify(disc));
     // Enter in a field records history; typing alone did not.
-    const before = await tab.evaluate(`window.PCalc.history.pending().length`);
+    const before = await tab.evaluate(`window.PCalc.history.recorded().length`);
     await tab.key("Enter");
-    await waitFor(tab, `window.PCalc.history.pending().length === ${before + 1}`);
-    const entry = await json(tab, `window.PCalc.history.pending().pop()`);
+    await waitFor(tab, `window.PCalc.history.recorded().length === ${before + 1}`);
+    const entry = await json(tab, `window.PCalc.history.recorded().pop()`);
     expect("percent.enter-records", before === 0 && entry.tool === "percent" && entry.calculator === "discount" && entry.copyText === "Final: 63.99\nSaved: 16.00", JSON.stringify({ before, entry }));
     // Enter spoke the result in the tool's one polite region; the result boxes are not live.
     const spoken = await json(tab, `({ region: document.getElementById("percentResultLive").textContent.trim(), live: document.querySelectorAll("#percentTool .result[aria-live], #percentTool .result[role]").length })`);
@@ -1613,6 +1878,16 @@ async function main() {
     }
     return report(opts, "Edge", edgePath, timing, info, engineSha, shots);
   }
+  if (opts.historyOnly) {
+    const server = await startStaticServer({ dir: join(opts.dist, "web") });
+    let shots = [];
+    try {
+      shots = await historyChecks(edgePath, server.url, opts.shots);
+    } finally {
+      await server.close();
+    }
+    return report(opts, "Edge", edgePath, timing, info, engineSha, shots);
+  }
   if (opts.dateOnly) {
     const server = await startStaticServer({ dir: join(opts.dist, "web") });
     let shots = [];
@@ -1720,6 +1995,12 @@ async function main() {
     screenshots = screenshots.concat(await percentChecks(edgePath, percentServer.url, opts.shots));
   } finally {
     await percentServer.close();
+  }
+  const historyServer = await startStaticServer({ dir: join(opts.dist, "web") });
+  try {
+    screenshots = screenshots.concat(await historyChecks(edgePath, historyServer.url, opts.shots));
+  } finally {
+    await historyServer.close();
   }
   if (opts.upgrade) await upgradeChecks(edgePath, opts.dist, info);
   return report(opts, browser, edgePath, timing, info, engineSha, screenshots);

@@ -111,7 +111,7 @@ export function percentBTests(web, engine) {
         const live = key === "discount" ? `→ final: ${r.finalText} | saved: ${r.savedText}` : "→ " + r.liveResult;
         app.byId(key + "CalcBtn").click();
         await tick(60);
-        const entry = app.PCalc.history.pending().pop();
+        const entry = app.PCalc.history.recorded().pop();
         checks.push({ key, label: lines(app, key).join("<br>") === r.label, live: text(app, key + "Live") === live, copy: entry && entry.copyText === (typeof r.copyText === "string" ? r.copyText : r.label) });
       };
       await compare("change", "percent.change", { originalValue: 150, newValue: 180 });
@@ -256,8 +256,8 @@ export function percentBTests(web, engine) {
       const label = text(app, "taxAmountLabel") === "Total amount (tax-inclusive)" && app.byId("taxAmount").getAttribute("placeholder") === "e.g., 115";
       const shown = lines(app, "tax").join("|") === "Net: 100.00|Tax: 15.00 (Total: 115.00)" && formula(app, "tax").join("|") === "net = 115 / (1 + 15/100) = 100.00|tax = 115 − 100.00 = 15.00";
       app.byId("taxCalcBtn").click();
-      await until(() => app.PCalc.history.pending().length === 1, 2000);
-      const e = app.PCalc.history.pending()[0];
+      await until(() => app.PCalc.history.recorded().length === 1, 2000);
+      const e = app.PCalc.history.recorded()[0];
       const entry = e.calculatorLabel === "Tax / VAT (Extract)" && e.inputs.mode === "extract" && e.inputsText === "115 incl. 15% tax" && e.resultText === "Net: 100.00 · Tax: 15.00";
       app.byId("taxMode-add").click();
       await until(() => text(app, "taxLive") === "→ Total: 132.25 | Tax: 17.25", 2000);
@@ -324,7 +324,7 @@ export function percentBTests(web, engine) {
       const copied = [];
       const app = await boot({ overrides: src, seed: (w) => { w.navigator.clipboard = { writeText: async (s) => { copied.push(s); } }; } });
       await settle(app);
-      const n = () => app.PCalc.history.pending().length;
+      const n = () => app.PCalc.history.recorded().length;
       await fillAll(app);
       app.byId("tipSwapBtn").click();
       app.byId("tipSwapBtn").click();
@@ -338,7 +338,7 @@ export function percentBTests(web, engine) {
       app.byId("markupCopyBtn").click();
       await until(() => n() === 3, 1500);
       const feedback = text(app, "markupCopyBtn") === "Copied";
-      const [d, t, mk] = app.PCalc.history.pending();
+      const [d, t, mk] = app.PCalc.history.recorded();
       const shape = d.tool === "percent" && d.calculator === "discount" && d.calculatorLabel === "Discount" && d.inputs.inputA === "79.99" && d.inputs.inputB === "20" &&
         !("inputC" in d.inputs) && d.inputsText === "79.99 (−20%)" && d.resultText === "Final: 63.99 · Saved: 16.00" && d.copyText === "Final: 63.99\nSaved: 16.00" && d.timestampMs === NOW &&
         t.calculator === "tip" && t.inputs.inputC === "3" && t.inputsText === "Bill 100 + 20% tip ÷ 3" && t.resultText === "Tip: 20.00 · Total: 120.00 · Each: 40.00" &&

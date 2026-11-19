@@ -12,8 +12,11 @@
 // the catalog. Per-card sequence counters keep a slower answer from
 // overwriting a newer keystroke or a Clear.
 //
-// History: Calculate, Enter and Copy record through PCalc.history (a queue
-// until M3); live updates never record.
+// History: Calculate, Enter and Copy record through PCalc.history (the
+// history store since M3); live updates never record. restore(entry) (the
+// History panel) puts an entry's stored inputs back into its card, which
+// opens, computes again in the current language and takes focus; a
+// restored countdown target is shown, not added to the countdown list.
 //
 // Field values, modes and the selected countdown live in `model` for the
 // session, so leaving the route and coming back (or a language change that
@@ -32,7 +35,7 @@
   const CHECKS = ["betweenIncludeEnd", "addBusiness", "bizIncludeEnd"];
 
   // The session model (see the header).
-  const model = { fields: {}, checks: {}, addMode: "add", leap: "feb28", bizPick: null, cdSelected: null, cdInitialised: false, cdForgotten: "", expandCountdown: false, revealCountdown: false };
+  const model = { fields: {}, checks: {}, addMode: "add", leap: "feb28", bizPick: null, cdSelected: null, cdInitialised: false, cdForgotten: "", expandCountdown: false, revealCountdown: false, restoreKey: null };
 
   let m = null; // the mounted view, or null
 
@@ -928,7 +931,8 @@
     const subBtn = modeButton("addModeSubtractBtn", t("date.mode.subtract"), model.addMode === "subtract");
     addBtn.addEventListener("click", () => setAddMode("add"));
     subBtn.addEventListener("click", () => setAddMode("subtract"));
-    const amount = (id, key) => el("div", { className: "date-field" }, [el("label", { className: "field-label", text: t(key), attrs: { for: id, id: id + "Label" } }), amountInput(id)]);
+    // Amounts take negatives: a ± key beside each (the iPhone keypad has no minus).
+    const amount = (id, key) => el("div", { className: "date-field" }, [el("label", { className: "field-label", text: t(key), attrs: { for: id, id: id + "Label" } }), ns.signToggle.wrap(amountInput(id), t("field.sign", { field: t(key) }))]);
     const add = L.card("add", t("date.card.add"), t("date.card.add.sub"), panel([
       toggleGroup("date.mode.label", [addBtn, subBtn]),
       dateRow("addStart", "date.field.start", "date.today.start"),
@@ -1229,6 +1233,12 @@
       model.revealCountdown = false;
       window.setTimeout(() => revealCountdown(mine), 0);
     }
+    if (model.restoreKey) {
+      const key = model.restoreKey;
+      model.restoreKey = null;
+      m.layout.expand(key);
+      window.setTimeout(() => revealCard(mine, key), 0);
+    }
     m.cleanups.push(ns.countdowns.watch({ visible: () => mine === m && cardVisible(), render: (now) => updateCountdown({ fromTick: true, now }) }));
     m.cleanups.push(ns.countdowns.onFlush(() => commitCountdown(false)));
     m.cleanups.push(ns.countdowns.subscribe(() => onCountdownsChanged()));
@@ -1312,6 +1322,68 @@
     if (typeof card.scrollIntoView === "function") card.scrollIntoView({ block: "start" });
   }
 
+  // A restored card comes into view and its title takes focus.
+  function revealCard(mine, key) {
+    if (mine !== m) return;
+    const card = byId("card-" + key);
+    const title = byId("card-" + key + "-title");
+    if (!card || !title) return;
+    title.setAttribute("tabindex", "-1");
+    title.focus({ preventScroll: true });
+    if (typeof card.scrollIntoView === "function") card.scrollIntoView({ block: "start" });
+  }
+
+  // History restore (see the header): the entry's inputs (plan B10's
+  // 15-field HistoryInputs, per calculator) into the session model; the
+  // next render (the panel navigates here) shows and computes them.
+  function restore(entry) {
+    const key = entry && entry.calculator;
+    const i = entry && entry.inputs && typeof entry.inputs === "object" ? entry.inputs : null;
+    if (!i || !KEYS.includes(key)) return false;
+    const f = model.fields;
+    const c = model.checks;
+    const s = (v) => (typeof v === "string" ? v : "");
+    switch (key) {
+      case "between":
+        f.betweenStart = s(i.startDate);
+        f.betweenEnd = s(i.endDate);
+        c.betweenIncludeEnd = i.includeEndDay === "true";
+        break;
+      case "add":
+        f.addStart = s(i.date);
+        model.addMode = i.operation === "subtract" ? "subtract" : "add";
+        f.addYears = s(i.years);
+        f.addMonths = s(i.months);
+        f.addWeeks = s(i.weeks);
+        f.addDays = s(i.days);
+        c.addBusiness = i.businessDays === "true";
+        break;
+      case "business":
+        f.bizStart = s(i.startDate);
+        f.bizEnd = s(i.endDate);
+        c.bizIncludeEnd = i.includeEndDay === "true";
+        break;
+      case "age":
+        f.ageBirth = s(i.birthDate);
+        f.ageAsOf = s(i.asOfDate);
+        model.leap = i.leapDayRule === "mar1" ? "mar1" : "feb28";
+        break;
+      case "info":
+        f.infoDate = s(i.date);
+        break;
+      default:
+        // Shown, not saved: leaving the tool does not add it to the list.
+        f.cdTarget = s(i.targetDate);
+        f.cdTime = s(i.targetTime);
+        f.cdLabel = "";
+        model.cdSelected = null;
+        model.cdInitialised = true;
+        model.cdForgotten = pairKey(f.cdTarget, f.cdTime);
+    }
+    model.restoreKey = key;
+    return true;
+  }
+
   // Settings > Layout > Reset card order & expand all.
   function resetLayout(ctx) {
     if (m) {
@@ -1326,6 +1398,7 @@
     render,
     leave,
     selectCountdown,
+    restore,
     resetLayout,
     ready: () => (m ? m.ready : Promise.resolve()),
     model: () => JSON.parse(JSON.stringify(model))

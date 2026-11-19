@@ -196,6 +196,7 @@
       const o = await store.load(name);
       ctx.outcomes[name] = o;
       if (name === "countdowns") await ns.countdowns.reload();
+      if (name === "history") await ns.historyStore.reload();
       if (o.status === "ok" && (name === "settings" || name === "state")) {
         ctx[name] = p.fromOutcome(o, name === "settings" ? p.DEFAULT_SETTINGS : p.DEFAULT_STATE);
         if (name === "settings") ns.theme.apply(ctx.settings.appearance.theme);
@@ -216,6 +217,7 @@
         ctx.outcomes[name] = { name, status: "empty", readOnly: false, doc: null, schemaVersion: null, backup: r.backup || null, field: null };
         if (name === "settings" || name === "state") await save(name);
         if (name === "countdowns") await ns.countdowns.reload();
+        if (name === "history") await ns.historyStore.reload();
       }
       if (ctx.shell) {
         ctx.shell.renderBanners();
@@ -371,6 +373,27 @@
     if (!/63\.99/.test(pctLive()) || pctCards !== 8 || pctLines !== 2 || pctAngle) fails.push("percent tool live=" + pctLive() + " cards=" + pctCards + " lines=" + pctLines);
     put("discountPrice", "");
     put("discountPercent", "");
+    // History (M3): Calculate records through the history store, whose
+    // writes are store_save_if; the stored document holds the entry with
+    // its engine version; an export goes through export_file.
+    put("changeOrig", "150");
+    put("changeNew", "180");
+    const changeLive = () => (byId("changeLive") ? byId("changeLive").textContent : "");
+    for (let i = 0; i < 40 && changeLive() !== "→ 20.00% increase"; i++) await nextFrame();
+    if (byId("changeCalcBtn")) byId("changeCalcBtn").click();
+    for (let i = 0; i < 40 && ns.historyStore.status().writes === 0; i++) await nextFrame();
+    await ns.historyStore.idle();
+    let stored = null;
+    try {
+      stored = JSON.parse((await ctx.store.load("history")).doc).entries;
+    } catch (_) {
+      stored = null;
+    }
+    const entryOk = stored && stored.length === 1 && stored[0].resultText === "20.00% increase" && /^percent-core [0-9]/.test(stored[0].engine);
+    const exported = await ns.historyIO.exportJson(ctx);
+    if (!entryOk || !exported.ok || !/Portable-Calculator-[0-9]{8}-[0-9]{6}(-[0-9]+)?[.]json$/.test(String(exported.path))) fails.push("history entry=" + Boolean(entryOk) + " export=" + exported.ok);
+    put("changeOrig", "");
+    put("changeNew", "");
     for (const pref of ["daylight", "retro", "terminal"]) {
       await ctx.setTheme(pref);
       const bg = getComputedStyle(root).getPropertyValue("--bg").trim().toUpperCase();
@@ -401,7 +424,7 @@
     const saved = await ctx.store.save("countdowns", countdowns);
     const back = await ctx.store.load("countdowns");
     if (!saved.ok || back.status !== "ok" || JSON.parse(back.doc).items[0].label !== "Smoke") fails.push("round trip countdowns");
-    return { ok: fails.length === 0, text: "shell " + (fails.length === 0 ? "ok (" + ns.router.ROUTES.length + " routes, the Date and Percentage tools live, 3 themes + System, 3 store round trips)" : "FAILED: " + fails.join(", ")) };
+    return { ok: fails.length === 0, text: "shell " + (fails.length === 0 ? "ok (" + ns.router.ROUTES.length + " routes, the Date and Percentage tools live, a history entry written and exported, 3 themes + System, 3 store round trips)" : "FAILED: " + fails.join(", ")) };
   }
 
   async function measureIpc(platform) {
@@ -480,6 +503,7 @@
     ctx.applyLanguage();
     listen(ctx);
     await ns.countdowns.init(ctx);
+    await ns.historyStore.init(ctx);
 
     // The last route reopens on launch unless the address names one.
     if (!ns.router.explicit()) {
