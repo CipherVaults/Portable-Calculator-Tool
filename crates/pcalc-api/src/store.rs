@@ -29,8 +29,10 @@
 //! frozen key lists in `tests/fixtures/store-keys.json` fail the build if a
 //! field set changes without that bump.
 //!
-//! `history` and `countdowns` are M2a skeletons of the B10/B11 schemas (the
-//! history `inputs` object is not yet tagged by tool); M3 completes them.
+//! `history` entries are strict per tool (M3, [`crate::history`]): the Date
+//! tool's 15-field inputs and the Percentage tool's `{inputA, inputB,
+//! inputC?, mode?}`; the calculators, converters and graphing refuse every
+//! entry until their milestones define their inputs.
 
 use serde::Serialize;
 use serde_json::{Map, Value};
@@ -90,7 +92,7 @@ pub struct DocError {
 }
 
 impl DocError {
-    fn at(path: &str, message: impl Into<String>) -> Self {
+    pub(crate) fn at(path: &str, message: impl Into<String>) -> Self {
         DocError {
             code: "invalid_request",
             field: Some(path.to_string()),
@@ -144,7 +146,7 @@ pub fn validate(doc: Doc, text: &str) -> Result<Validated, DocError> {
     let canonical = match doc {
         Doc::Settings => to_json(&settings(&value)?),
         Doc::State => to_json(&state(&value)?),
-        Doc::History => to_json(&history(&value)?),
+        Doc::History => to_json(&crate::history::history(&value, "")?),
         Doc::Countdowns => to_json(&countdowns(&value)?),
     };
     Ok(Validated::Current(canonical))
@@ -198,16 +200,23 @@ pub(crate) fn run(doc: Doc, req: &str) -> String {
         ),
         // Not JSON at all: the same bytes as every other op's invalid_request.
         Err(DocError { field: None, .. }) => ApiError::INVALID_REQUEST.to_json(),
-        Err(error) => {
-            #[derive(Serialize)]
-            struct Envelope {
-                ok: &'static str,
-                error: DocError,
-            }
-            serde_json::to_string(&Envelope { ok: "false", error })
-                .unwrap_or_else(|_| INTERNAL_JSON.to_string())
-        }
+        Err(error) => error_json(error),
     }
+}
+
+/// `{"ok":"false","error":{"code","field","message"}}` for a [`DocError`]
+/// (a `null` field is the plain `invalid_request` of every other op).
+pub(crate) fn error_json(error: DocError) -> String {
+    if error.field.is_none() && error.code == "invalid_request" {
+        return ApiError::INVALID_REQUEST.to_json();
+    }
+    #[derive(Serialize)]
+    struct Envelope {
+        ok: &'static str,
+        error: DocError,
+    }
+    serde_json::to_string(&Envelope { ok: "false", error })
+        .unwrap_or_else(|_| INTERNAL_JSON.to_string())
 }
 
 fn to_json<T: Serialize>(value: &T) -> String {
@@ -219,17 +228,17 @@ fn to_json<T: Serialize>(value: &T) -> String {
 // ---------------------------------------------------------------------------
 
 /// The latest instant a JavaScript `Date` can hold, in ms.
-const MAX_TIMESTAMP_MS: u64 = 8_640_000_000_000_000;
+pub(crate) const MAX_TIMESTAMP_MS: u64 = 8_640_000_000_000_000;
 
 /// A JSON object being read field by field; [`Obj::finish`] refuses any
 /// field that was not read.
-struct Obj<'a> {
+pub(crate) struct Obj<'a> {
     map: &'a Map<String, Value>,
     path: String,
     read: Vec<&'static str>,
 }
 
-fn join(path: &str, key: &str) -> String {
+pub(crate) fn join(path: &str, key: &str) -> String {
     if path.is_empty() {
         key.to_string()
     } else {
@@ -237,7 +246,7 @@ fn join(path: &str, key: &str) -> String {
     }
 }
 
-fn object<'a>(value: &'a Value, path: &str) -> Result<Obj<'a>, DocError> {
+pub(crate) fn object<'a>(value: &'a Value, path: &str) -> Result<Obj<'a>, DocError> {
     match value {
         Value::Object(map) => Ok(Obj {
             map,
@@ -249,7 +258,7 @@ fn object<'a>(value: &'a Value, path: &str) -> Result<Obj<'a>, DocError> {
 }
 
 impl<'a> Obj<'a> {
-    fn get(&mut self, key: &'static str) -> Result<(&'a Value, String), DocError> {
+    pub(crate) fn get(&mut self, key: &'static str) -> Result<(&'a Value, String), DocError> {
         self.read.push(key);
         let path = join(&self.path, key);
         match self.map.get(key) {
@@ -258,13 +267,13 @@ impl<'a> Obj<'a> {
         }
     }
 
-    fn boolean(&mut self, key: &'static str) -> Result<bool, DocError> {
+    pub(crate) fn boolean(&mut self, key: &'static str) -> Result<bool, DocError> {
         let (v, path) = self.get(key)?;
         v.as_bool()
             .ok_or_else(|| DocError::at(&path, "Expected true or false."))
     }
 
-    fn one_of(
+    pub(crate) fn one_of(
         &mut self,
         key: &'static str,
         allowed: &'static [&'static str],
@@ -273,12 +282,16 @@ impl<'a> Obj<'a> {
         one_of(v, &path, allowed)
     }
 
-    fn uint(&mut self, key: &'static str, max: u64) -> Result<u64, DocError> {
+    pub(crate) fn uint(&mut self, key: &'static str, max: u64) -> Result<u64, DocError> {
         let (v, path) = self.get(key)?;
         uint(v, &path, max)
     }
 
-    fn opt_uint(&mut self, key: &'static str, max: u64) -> Result<Option<u64>, DocError> {
+    pub(crate) fn opt_uint(
+        &mut self,
+        key: &'static str,
+        max: u64,
+    ) -> Result<Option<u64>, DocError> {
         let (v, path) = self.get(key)?;
         if v.is_null() {
             Ok(None)
@@ -287,30 +300,17 @@ impl<'a> Obj<'a> {
         }
     }
 
-    fn text(&mut self, key: &'static str, max_chars: usize) -> Result<String, DocError> {
+    pub(crate) fn text(&mut self, key: &'static str, max_chars: usize) -> Result<String, DocError> {
         let (v, path) = self.get(key)?;
         text(v, &path, max_chars)
     }
 
-    fn opt_text(
-        &mut self,
-        key: &'static str,
-        max_chars: usize,
-    ) -> Result<Option<String>, DocError> {
-        let (v, path) = self.get(key)?;
-        if v.is_null() {
-            Ok(None)
-        } else {
-            text(v, &path, max_chars).map(Some)
-        }
-    }
-
-    fn object(&mut self, key: &'static str) -> Result<Obj<'a>, DocError> {
+    pub(crate) fn object(&mut self, key: &'static str) -> Result<Obj<'a>, DocError> {
         let (v, path) = self.get(key)?;
         object(v, &path)
     }
 
-    fn array(
+    pub(crate) fn array(
         &mut self,
         key: &'static str,
         max_len: usize,
@@ -324,7 +324,7 @@ impl<'a> Obj<'a> {
     }
 
     /// Refuses every field that was not read.
-    fn finish(self) -> Result<(), DocError> {
+    pub(crate) fn finish(self) -> Result<(), DocError> {
         match self.map.keys().find(|k| !self.read.contains(&k.as_str())) {
             Some(extra) => Err(DocError::at(&join(&self.path, extra), "Unknown field.")),
             None => Ok(()),
@@ -332,7 +332,7 @@ impl<'a> Obj<'a> {
     }
 }
 
-fn one_of(
+pub(crate) fn one_of(
     v: &Value,
     path: &str,
     allowed: &'static [&'static str],
@@ -345,7 +345,7 @@ fn one_of(
         .ok_or_else(|| DocError::at(path, format!("Expected one of: {}.", allowed.join(", "))))
 }
 
-fn uint(v: &Value, path: &str, max: u64) -> Result<u64, DocError> {
+pub(crate) fn uint(v: &Value, path: &str, max: u64) -> Result<u64, DocError> {
     v.as_u64()
         .filter(|n| *n <= max)
         .ok_or_else(|| DocError::at(path, format!("Expected a whole number from 0 to {max}.")))
@@ -445,7 +445,7 @@ const FIRST_DAYS: [&str; 2] = ["monday", "sunday"];
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Settings {
+pub(crate) struct Settings {
     schema_version: u64,
     check_updates_on_startup: bool,
     history: HistorySettings,
@@ -503,7 +503,7 @@ struct LanguageSettings {
     digits: &'static str,
 }
 
-fn settings(value: &Value) -> Result<Settings, DocError> {
+pub(crate) fn settings(value: &Value) -> Result<Settings, DocError> {
     let mut o = object(value, "")?;
     let schema_version = o.uint("schemaVersion", 1)?;
     let check_updates_on_startup = o.boolean("checkUpdatesOnStartup")?;
@@ -683,105 +683,10 @@ fn state(value: &Value) -> Result<State, DocError> {
 }
 
 // ---------------------------------------------------------------------------
-// history (B10): M2a skeleton
+// history (B10): the strict per-tool schema lives in crate::history
 // ---------------------------------------------------------------------------
 
-/// Unpinned entries kept (the oldest is evicted beyond this).
-pub const HISTORY_MAX_UNPINNED: usize = 2000;
-/// Pinned entries kept (never evicted).
-pub const HISTORY_MAX_PINNED: usize = 200;
-const TOOLS: [&str; 7] = [
-    "standard",
-    "scientific",
-    "programmer",
-    "graphing",
-    "converter",
-    "percent",
-    "date",
-];
-const TEXT_MAX: usize = 1024;
-const COPY_TEXT_MAX: usize = 4096;
-const NOTE_MAX: usize = 200;
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct History {
-    schema_version: u64,
-    entries: Vec<HistoryEntry>,
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct HistoryEntry {
-    id: String,
-    timestamp_ms: u64,
-    tool: &'static str,
-    calculator: String,
-    calculator_label: String,
-    inputs: Value,
-    expression_text: String,
-    inputs_text: String,
-    result_text: String,
-    copy_text: String,
-    pinned: bool,
-    note: Option<String>,
-    engine: String,
-}
-
-fn history(value: &Value) -> Result<History, DocError> {
-    let mut o = object(value, "")?;
-    let schema_version = o.uint("schemaVersion", 1)?;
-    let (items, path) = o.array("entries", HISTORY_MAX_UNPINNED + HISTORY_MAX_PINNED)?;
-    let mut entries = Vec::with_capacity(items.len());
-    let (mut pinned, mut unpinned) = (0usize, 0usize);
-    for (i, item) in items.iter().enumerate() {
-        let at = format!("{path}[{i}]");
-        let mut e = object(item, &at)?;
-        let (v, p) = e.get("id")?;
-        let id = ident(v, &p)?;
-        let timestamp_ms = e.uint("timestampMs", MAX_TIMESTAMP_MS)?;
-        let tool = e.one_of("tool", &TOOLS)?;
-        let calculator = e.text("calculator", 64)?;
-        let calculator_label = e.text("calculatorLabel", TEXT_MAX)?;
-        let (inputs, p) = e.get("inputs")?;
-        if !inputs.is_object() {
-            return Err(DocError::at(&p, "Expected an object."));
-        }
-        let entry = HistoryEntry {
-            id,
-            timestamp_ms,
-            tool,
-            calculator,
-            calculator_label,
-            inputs: inputs.clone(),
-            expression_text: e.text("expressionText", TEXT_MAX)?,
-            inputs_text: e.text("inputsText", TEXT_MAX)?,
-            result_text: e.text("resultText", TEXT_MAX)?,
-            copy_text: e.text("copyText", COPY_TEXT_MAX)?,
-            pinned: e.boolean("pinned")?,
-            note: e.opt_text("note", NOTE_MAX)?,
-            engine: e.text("engine", 64)?,
-        };
-        e.finish()?;
-        if entries.iter().any(|x: &HistoryEntry| x.id == entry.id) {
-            return Err(DocError::at(&format!("{at}.id"), "Duplicate id."));
-        }
-        if entry.pinned {
-            pinned += 1;
-        } else {
-            unpinned += 1;
-        }
-        if pinned > HISTORY_MAX_PINNED || unpinned > HISTORY_MAX_UNPINNED {
-            return Err(DocError::at(&at, "Too many entries."));
-        }
-        entries.push(entry);
-    }
-    o.finish()?;
-    Ok(History {
-        schema_version,
-        entries,
-    })
-}
+pub use crate::history::{HISTORY_MAX_PINNED, HISTORY_MAX_UNPINNED};
 
 // ---------------------------------------------------------------------------
 // countdowns (B9, B11)
@@ -793,7 +698,7 @@ const LABEL_MAX: usize = 60;
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Countdowns {
+pub(crate) struct Countdowns {
     schema_version: u64,
     items: Vec<Countdown>,
 }
@@ -810,7 +715,7 @@ struct Countdown {
     finished_seen_at_ms: Option<u64>,
 }
 
-fn countdowns(value: &Value) -> Result<Countdowns, DocError> {
+pub(crate) fn countdowns(value: &Value) -> Result<Countdowns, DocError> {
     let mut o = object(value, "")?;
     let schema_version = o.uint("schemaVersion", 1)?;
     let (list, path) = o.array("items", COUNTDOWNS_MAX)?;
@@ -871,7 +776,7 @@ mod tests {
 
     pub(crate) const SETTINGS: &str = r#"{"schemaVersion":1,"checkUpdatesOnStartup":false,"history":{"enabled":true},"display":{"grouping":"comma"},"calculator":{"angleUnit":"deg","wordSize":"qword","base":"dec","shiftMode":"arithmetic"},"date":{"firstDayOfWeek":"monday","calendar":{},"cardOrder":["between","add","business","age","info","countdown"],"collapsedCards":[]},"percent":{"cardOrder":["change","percent","what","discount","base","markup","tax","tip"],"collapsedCards":["tip"]},"appearance":{"theme":"system"},"language":{"code":"auto","digits":"auto"}}"#;
     const STATE: &str = r#"{"schemaVersion":1,"route":"converter/length","pane":{"open":false,"tab":"history"},"dev":{"pseudoLocale":"off"}}"#;
-    const HISTORY: &str = r#"{"schemaVersion":1,"entries":[{"id":"h-1-0","timestampMs":1795400000000,"tool":"standard","calculator":"standard","calculatorLabel":"Standard","inputs":{"expr":[{"n":"2"},{"op":"+"},{"n":"2"}]},"expressionText":"2 + 2","inputsText":"","resultText":"4","copyText":"2 + 2 = 4","pinned":false,"note":null,"engine":"calc-core 0.1.0"}]}"#;
+    const HISTORY: &str = r#"{"schemaVersion":1,"entries":[{"id":"h-1795400000000-0","timestampMs":1795400000000,"tool":"date","calculator":"info","calculatorLabel":"Date Info","inputs":{"date":"2026-11-19"},"expressionText":"","inputsText":"2026-11-19","resultText":"Thursday, 19 November 2026","copyText":"2026-11-19 is a Thursday","pinned":false,"note":null,"engine":"date-core 1.0.0"}]}"#;
     const COUNTDOWNS: &str = r#"{"schemaVersion":1,"items":[{"id":"c-1","label":"New year","targetDate":"2026-12-31","targetTime":"09:00","createdAtMs":1,"savedAtMs":2,"finishedSeenAtMs":null}]}"#;
 
     fn sample(doc: Doc) -> &'static str {
@@ -1028,13 +933,13 @@ mod tests {
             ),
             (
                 Doc::History,
-                r#""id":"h-1-0""#,
+                r#""id":"h-1795400000000-0""#,
                 r#""id":"h 1""#,
                 "entries[0].id",
             ),
             (
                 Doc::History,
-                r#""tool":"standard""#,
+                r#""tool":"date""#,
                 r#""tool":"x""#,
                 "entries[0].tool",
             ),

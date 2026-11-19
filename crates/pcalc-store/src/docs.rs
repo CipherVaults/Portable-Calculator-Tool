@@ -29,6 +29,13 @@
 //! backup just written is never the one pruned (the clock may have been set
 //! back).
 //!
+//! [`DocStore::save_if`] is the compare-and-save every history write uses
+//! (plan B10, M3): it writes only while the stored document is still the
+//! one the caller read, so two windows recording at once never overwrite
+//! each other (the loser gets `conflict`, reads again and re-applies its
+//! operation). Saves, compare-and-saves and clears are serialised by one
+//! write lock.
+//!
 //! [`DocStore::memory`] keeps everything in memory (the `--smoke-test` run
 //! never touches the real app data).
 
@@ -112,6 +119,8 @@ pub enum StoreError {
     TooLarge,
     /// The file system refused the write.
     WriteFailed,
+    /// [`DocStore::save_if`]: the stored document changed since it was read.
+    Conflict,
 }
 
 impl StoreError {
@@ -123,6 +132,7 @@ impl StoreError {
             StoreError::Invalid => "invalid",
             StoreError::TooLarge => "too_large",
             StoreError::WriteFailed => "write_failed",
+            StoreError::Conflict => "conflict",
         }
     }
 }
@@ -151,6 +161,7 @@ pub struct DocStore {
     backend: Backend,
     read_only: Mutex<HashMap<&'static str, Status>>,
     loaded: Mutex<HashSet<&'static str>>,
+    writes: Mutex<()>,
     clock: fn() -> u64,
 }
 
@@ -215,6 +226,7 @@ impl DocStore {
             backend: Backend::Dir(dir.into()),
             read_only: Mutex::new(HashMap::new()),
             loaded: Mutex::new(HashSet::new()),
+            writes: Mutex::new(()),
             clock: now_secs,
         }
     }
@@ -225,6 +237,7 @@ impl DocStore {
             backend: Backend::Memory(Mutex::new(MemoryFiles::default())),
             read_only: Mutex::new(HashMap::new()),
             loaded: Mutex::new(HashSet::new()),
+            writes: Mutex::new(()),
             clock: now_secs,
         }
     }
@@ -358,6 +371,50 @@ impl DocStore {
     /// read-only. A document not loaded yet is loaded first (so a corrupt
     /// file is backed up and protected, never overwritten unseen).
     pub fn save(&self, doc: Doc, text: &str) -> Result<String, StoreError> {
+        let _writing = self.writes.lock().map_err(|_| StoreError::WriteFailed)?;
+        self.save_locked(doc, text)
+    }
+
+    /// Compare-and-save: like [`DocStore::save`], but only while the stored
+    /// document is still `expected` (its canonical text as the caller's
+    /// last load or save returned it; `None` = no document). Anything else
+    /// is `conflict` and nothing is written. A stored document that became
+    /// unreadable, corrupt, newer or too large since is loaded again (so it
+    /// is backed up and protected) and the answer is `read_only`.
+    pub fn save_if(
+        &self,
+        doc: Doc,
+        expected: Option<&str>,
+        text: &str,
+    ) -> Result<String, StoreError> {
+        let _writing = self.writes.lock().map_err(|_| StoreError::WriteFailed)?;
+        if !self.was_loaded(doc) {
+            self.load(doc);
+        }
+        if self.is_read_only(doc) {
+            return Err(StoreError::ReadOnly);
+        }
+        let current = match self.read_raw(doc) {
+            Raw::Missing => None,
+            Raw::Bytes(bytes) => match check(doc, &bytes) {
+                Checked::Current(canonical) => Some(canonical),
+                _ => {
+                    self.load(doc);
+                    return Err(StoreError::ReadOnly);
+                }
+            },
+            Raw::TooLarge | Raw::Unreadable => {
+                self.load(doc);
+                return Err(StoreError::ReadOnly);
+            }
+        };
+        if current.as_deref() != expected {
+            return Err(StoreError::Conflict);
+        }
+        self.save_locked(doc, text)
+    }
+
+    fn save_locked(&self, doc: Doc, text: &str) -> Result<String, StoreError> {
         if !self.was_loaded(doc) {
             self.load(doc);
         }
@@ -383,6 +440,7 @@ impl DocStore {
     /// never written, never backed up); a document not loaded yet is loaded
     /// first to find that out.
     pub fn clear(&self, doc: Doc) -> Result<Option<String>, StoreError> {
+        let _writing = self.writes.lock().map_err(|_| StoreError::WriteFailed)?;
         if !self.was_loaded(doc) {
             self.load(doc);
         }
@@ -964,6 +1022,97 @@ mod tests {
                 br#"{"schemaVersion":5}"#
             );
         }
+    }
+
+    const HISTORY_A: &str = r#"{"schemaVersion":1,"entries":[{"id":"h-1-0","timestampMs":1,"tool":"date","calculator":"info","calculatorLabel":"Date Info","inputs":{"date":"2026-11-19"},"expressionText":"","inputsText":"2026-11-19","resultText":"Thursday","copyText":"2026-11-19","pinned":false,"note":null,"engine":"date-core 1.0.0"}]}"#;
+
+    fn history_with(id: &str) -> String {
+        HISTORY_A.replace("h-1-0", id)
+    }
+
+    #[test]
+    fn compare_and_save_refuses_a_stale_writer() {
+        let temp = TestTempDir::new("pcalc-docs-cas");
+        for store in stores(&temp) {
+            let doc = Doc::History;
+            assert_eq!(store.load(doc).status, Status::Empty);
+            // Window A writes on top of "no document".
+            let a = store.save_if(doc, None, &history_with("h-1-0")).unwrap();
+            // Window B still believes there is none: conflict, nothing written.
+            assert_eq!(
+                store.save_if(doc, None, &history_with("h-2-0")),
+                Err(StoreError::Conflict)
+            );
+            assert_eq!(store.load(doc).doc.as_deref(), Some(a.as_str()));
+            // B reads again and writes on top of A's document.
+            let b = store
+                .save_if(doc, Some(&a), &history_with("h-2-0"))
+                .unwrap();
+            assert_eq!(
+                store.save_if(doc, Some(&a), &history_with("h-3-0")),
+                Err(StoreError::Conflict)
+            );
+            assert_eq!(store.load(doc).doc.as_deref(), Some(b.as_str()));
+            // A document that turned corrupt underneath: read-only, backed up.
+            store.put_raw(doc, b"{broken").unwrap();
+            assert_eq!(
+                store.save_if(doc, Some(&b), &history_with("h-4-0")),
+                Err(StoreError::ReadOnly)
+            );
+            assert!(store.is_read_only(doc));
+            assert_eq!(store.backups(doc).len(), 1);
+            assert_eq!(StoreError::Conflict.code(), "conflict");
+        }
+    }
+
+    /// The B5a case: several windows of one process record at the same
+    /// time. Each writer loops load -> history.apply -> save_if until its
+    /// write lands; no entry is ever lost.
+    #[test]
+    fn two_threads_recording_at_once_keep_every_entry() {
+        use serde_json::{json, Value};
+        let temp = TestTempDir::new("pcalc-docs-2w");
+        let store = std::sync::Arc::new(DocStore::in_dir(temp.path().join("app")));
+        store.load(Doc::History);
+        let writers: Vec<_> = (0..2)
+            .map(|w| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    let mut conflicts = 0usize;
+                    for i in 0..15 {
+                        let text = history_with(&format!("h-{}-{w}", i + 10));
+                        let mut entry =
+                            serde_json::from_str::<Value>(&text).unwrap()["entries"][0].clone();
+                        entry["resultText"] = json!(format!("w{w} i{i}"));
+                        loop {
+                            let current = store.load(Doc::History).doc;
+                            let doc: Value = current
+                                .as_deref()
+                                .map(|t| serde_json::from_str(t).unwrap())
+                                .unwrap_or(Value::Null);
+                            let req = json!({"doc": doc, "ops": [{"add": entry}]}).to_string();
+                            let res: Value =
+                                serde_json::from_str(&pcalc_api::call("history.apply", &req))
+                                    .unwrap();
+                            let next = res["result"]["doc"].to_string();
+                            match store.save_if(Doc::History, current.as_deref(), &next) {
+                                Ok(_) => break,
+                                Err(StoreError::Conflict) => conflicts += 1,
+                                Err(other) => panic!("{other:?}"),
+                            }
+                        }
+                    }
+                    conflicts
+                })
+            })
+            .collect();
+        let conflicts: usize = writers.into_iter().map(|t| t.join().unwrap()).sum();
+        let stored: Value = serde_json::from_str(&store.load(Doc::History).doc.unwrap()).unwrap();
+        assert_eq!(
+            stored["entries"].as_array().unwrap().len(),
+            30,
+            "conflicts {conflicts}"
+        );
     }
 
     #[test]

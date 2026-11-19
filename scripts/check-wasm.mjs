@@ -71,9 +71,17 @@ const TIME_ZONES = ["UTC", "America/New_York", "Africa/Cairo"];
 const CAP_ENGINE = 64 * 1024;
 const CAP_STORE = 256 * 1024;
 const CAP_HISTORY_VALIDATE = 4 * 1024 * 1024 + 512 * 1024;
+const CAP_IMPORT = 8 * 1024 * 1024;
 // Plan B2's per-op caps (pcalc-api's Op::request_cap; its tests pin every
 // op, and the cap edges of the random diff re-prove them byte for byte).
-const capOf = (op) => (op === "history.validate" ? CAP_HISTORY_VALIDATE : /^[a-z]+\.validate$/.test(op) ? CAP_STORE : CAP_ENGINE);
+const capOf = (op) =>
+  op === "history.apply" || op === "history.import_preview"
+    ? CAP_IMPORT
+    : op === "history.validate" || op === "history.export_csv"
+      ? CAP_HISTORY_VALIDATE
+      : /^[a-z]+\.validate$/.test(op)
+        ? CAP_STORE
+        : CAP_ENGINE;
 // pcalc_wasm::MAX_INPUT_BYTES: MAX_OP_BYTES (64) + MAX_REQUEST_BYTES (8 MiB).
 const MAX_INPUT_BYTES = 64 + 8 * 1024 * 1024;
 const BRIDGE_BUILD = ["build", "--release", "--locked", "-p", "pcalc-api", "-p", "date-core", "-p", "percent-core", "--examples"];
@@ -229,7 +237,7 @@ function knownOps() {
   const text = readFileSync(join(ROOT, "crates", "pcalc-api", "src", "op.rs"), "utf8");
   const table = /const TABLE: \[\(&str, Op\); (\d+)\] = \[([\s\S]*?)\n\];/.exec(text);
   if (!table) fail("cannot find the op TABLE in crates/pcalc-api/src/op.rs");
-  const names = [...table[2].matchAll(/\("([a-z_.]+)", Op::/g)].map((m) => m[1]);
+  const names = [...table[2].matchAll(/\(\s*"([a-z_.]+)",\s*Op::/g)].map((m) => m[1]);
   if (names.length !== Number(table[1])) fail(`op TABLE declares ${table[1]} ops but lists ${names.length}`);
   return names;
 }

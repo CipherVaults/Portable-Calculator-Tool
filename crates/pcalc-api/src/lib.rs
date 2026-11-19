@@ -29,7 +29,8 @@
 //! | `meta.versions` | `{api, app, engines}` |
 //! | `date.days_between`, `date.add_subtract`, `date.business_days`, `date.age`, `date.date_info`, `date.countdown`, `date.holidays_in_range`, `date.month_grid`, `date.validate_calendar` | `date_core::api` (byte-identical to the Date app) |
 //! | `percent.change`, `percent.percent`, `percent.what`, `percent.discount`, `percent.base`, `percent.markup`, `percent.tax`, `percent.tip` | `percent_core`, normalised to the envelope |
-//! | `settings.validate`, `state.validate`, `history.validate`, `countdowns.validate` | [`store`]: the stored document's raw text in, `ok` / `newer` / `invalid_request` out (M2a) |
+//! | `settings.validate`, `state.validate`, `history.validate`, `countdowns.validate` | [`store`]: the stored document's raw text in, `ok` / `newer` / `invalid_request` out (M2a; history entries strict per tool since M3) |
+//! | `history.apply`, `history.import_preview`, `history.export_csv` | [`history`]: the merge every history write goes through, the import check, the CSV export (M3) |
 //!
 //! The calculator, converter and graph ops arrive with their milestones;
 //! until then they are `unknown_op`.
@@ -42,13 +43,14 @@
 
 mod date;
 mod envelope;
+pub mod history;
 mod meta;
 mod op;
 mod percent;
 pub mod store;
 
 pub use envelope::{ApiError, ErrorEnvelope};
-pub use op::{Op, PercentOp};
+pub use op::{HistoryOp, Op, PercentOp};
 
 /// Version of the `call` contract (ops, envelope, caps). Reported by
 /// `meta.versions` as `api`.
@@ -70,7 +72,7 @@ pub const CAP_STORE: usize = 256 * 1024;
 /// Cap for `history.validate` (the 4 MiB store cap plus headroom).
 pub const CAP_HISTORY_VALIDATE: usize = 4 * 1024 * 1024 + 512 * 1024;
 
-/// Cap for `history.import_preview`.
+/// Cap for `history.import_preview` and `history.apply`.
 pub const CAP_IMPORT: usize = 8 * 1024 * 1024;
 
 /// The largest request any op can accept (the WASM input buffer limit).
@@ -98,6 +100,9 @@ pub fn call_bytes(op: &[u8], req: &[u8]) -> String {
         Op::Date(date_op) => date::run(date_op, req),
         Op::Percent(percent_op) => percent::run(percent_op, req),
         Op::Validate(doc) => store::run(doc, req),
+        Op::History(HistoryOp::Apply) => history::apply(req),
+        Op::History(HistoryOp::ImportPreview) => history::import_preview(req),
+        Op::History(HistoryOp::ExportCsv) => history::export_csv(req),
     }
 }
 
@@ -160,7 +165,8 @@ mod tests {
         );
         for op in Op::ALL {
             let want = match op.name() {
-                "history.validate" => CAP_HISTORY_VALIDATE,
+                "history.validate" | "history.export_csv" => CAP_HISTORY_VALIDATE,
+                "history.apply" | "history.import_preview" => CAP_IMPORT,
                 n if n.ends_with(".validate") => CAP_STORE,
                 _ => CAP_ENGINE,
             };
@@ -204,7 +210,7 @@ mod tests {
         // An unknown op stays unknown_op at every size, as on WASM.
         for len in [0, CAP_ENGINE, CAP_ENGINE + 1, MAX_REQUEST_BYTES + 1] {
             assert_eq!(
-                call_bytes(b"history.import_preview", &vec![b' '; len]),
+                call_bytes(b"legacy.preview", &vec![b' '; len]),
                 ApiError::UNKNOWN_OP.to_json()
             );
         }

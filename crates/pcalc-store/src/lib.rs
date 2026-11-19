@@ -12,6 +12,9 @@
 //!   `<name>.validate` op (`pcalc_api::store::check`), read-only on any
 //!   non-NotFound failure, timestamped backups (newest 3) before anything
 //!   corrupt can be replaced, and an in-memory variant for smoke tests.
+//! - [`export`]: the desktop export file (plan B10, M3): a new
+//!   `Portable-Calculator-<yyyymmdd-hhmmss>.json|csv` in Downloads, never
+//!   overwriting anything.
 //! - [`update`]: the payload-free GitHub "latest release" check, release
 //!   JSON parsing with URL sanitising, and semver comparison, parameterised
 //!   by an [`update::AppIdentity`] `{repoUrl, userAgent, sentinel}` instead
@@ -23,6 +26,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 
 pub mod docs;
+pub mod export;
 pub mod fs;
 pub mod update;
 

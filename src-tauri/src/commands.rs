@@ -6,7 +6,7 @@
 
 use pcalc_api::store::Doc;
 use pcalc_store::docs::{LoadOutcome, Status, StoreError};
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::{AppStore, SmokeState};
 
@@ -43,6 +43,49 @@ pub fn store_save(
     text: String,
 ) -> Result<String, &'static str> {
     store.0.save(doc(&name)?, &text).map_err(StoreError::code)
+}
+
+/// `store_save_if(name, expected, text)`: compare-and-save (plan B10, M3):
+/// writes only while the stored document is still `expected` (the
+/// canonical text the caller last read; `null` = none), else `conflict`.
+/// Every history write goes through it, so windows never overwrite each
+/// other's entries.
+#[tauri::command]
+pub fn store_save_if(
+    store: State<'_, AppStore>,
+    name: String,
+    expected: Option<String>,
+    text: String,
+) -> Result<String, &'static str> {
+    store
+        .0
+        .save_if(doc(&name)?, expected.as_deref(), &text)
+        .map_err(StoreError::code)
+}
+
+/// `export_file(kind, stamp, text)`: writes a new
+/// `Portable-Calculator-<stamp>.<kind>` (kind `json` or `csv`, stamp
+/// `yyyymmdd-hhmmss` local time) into the Downloads folder and returns its
+/// full path for the UI to show. The renderer never chooses the folder.
+/// The smoke run writes into a temporary folder instead.
+#[tauri::command]
+pub fn export_file(
+    app: AppHandle,
+    smoke: State<'_, SmokeState>,
+    kind: String,
+    stamp: String,
+    text: String,
+) -> Result<String, &'static str> {
+    let dir = if smoke.enabled {
+        let dir = std::env::temp_dir().join("pcalc-smoke-export");
+        std::fs::create_dir_all(&dir).map_err(|_| "export_failed")?;
+        dir
+    } else {
+        app.path().download_dir().map_err(|_| "no_downloads")?
+    };
+    pcalc_store::export::write_export(&dir, &stamp, &kind, text.as_bytes())
+        .map(|path| path.display().to_string())
+        .map_err(|_| "export_failed")
 }
 
 /// `store_clear(name)`: the explicit, UI-confirmed "Start fresh": backs the

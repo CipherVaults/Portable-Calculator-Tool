@@ -3,7 +3,7 @@
 use date_core::api::Op as DateOp;
 
 use crate::store::Doc;
-use crate::{CAP_ENGINE, CAP_HISTORY_VALIDATE, CAP_STORE, MAX_OP_BYTES};
+use crate::{CAP_ENGINE, CAP_HISTORY_VALIDATE, CAP_IMPORT, CAP_STORE, MAX_OP_BYTES};
 
 /// A percentage calculator (PCT v2.3.0's eight cards).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -26,6 +26,18 @@ pub enum PercentOp {
     Tip,
 }
 
+/// A history op besides `history.validate` (plan B10, M3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum HistoryOp {
+    /// `history.apply`: add, import, delete, pin and note on the stored
+    /// document, then the caps.
+    Apply,
+    /// `history.import_preview`: an export file's entries, checked one by one.
+    ImportPreview,
+    /// `history.export_csv`: the history as CSV (formula cells escaped).
+    ExportCsv,
+}
+
 /// One API operation. The list is closed: anything else is `unknown_op`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Op {
@@ -38,10 +50,13 @@ pub enum Op {
     /// A store validator: `settings.validate`, `state.validate`,
     /// `history.validate`, `countdowns.validate` (plan B10, B11).
     Validate(Doc),
+    /// A history op (`history.apply`, `history.import_preview`,
+    /// `history.export_csv`).
+    History(HistoryOp),
 }
 
 /// `(name, op)` for every op, in documentation order.
-const TABLE: [(&str, Op); 22] = [
+const TABLE: [(&str, Op); 25] = [
     ("meta.versions", Op::MetaVersions),
     ("date.days_between", Op::Date(DateOp::CalcDaysBetween)),
     ("date.add_subtract", Op::Date(DateOp::CalcAddSubtract)),
@@ -64,12 +79,18 @@ const TABLE: [(&str, Op); 22] = [
     ("state.validate", Op::Validate(Doc::State)),
     ("history.validate", Op::Validate(Doc::History)),
     ("countdowns.validate", Op::Validate(Doc::Countdowns)),
+    ("history.apply", Op::History(HistoryOp::Apply)),
+    (
+        "history.import_preview",
+        Op::History(HistoryOp::ImportPreview),
+    ),
+    ("history.export_csv", Op::History(HistoryOp::ExportCsv)),
 ];
 
 impl Op {
     /// Every op, in documentation order.
-    pub const ALL: [Op; 22] = {
-        let mut all = [Op::MetaVersions; 22];
+    pub const ALL: [Op; 25] = {
+        let mut all = [Op::MetaVersions; 25];
         let mut i = 0;
         while i < TABLE.len() {
             all[i] = TABLE[i].1;
@@ -105,12 +126,13 @@ impl Op {
     /// |---|---|
     /// | `meta.*`, `date.*`, `percent.*` (and later `calc`, `prog`, `units`, `graph`) | [`CAP_ENGINE`] (64 KiB) |
     /// | `settings.validate`, `state.validate`, `countdowns.validate` | [`CAP_STORE`] (256 KiB) |
-    /// | `history.validate` | [`CAP_HISTORY_VALIDATE`] (4.5 MiB) |
-    /// | `history.import_preview` (M3) | [`crate::CAP_IMPORT`] (8 MiB) |
+    /// | `history.validate`, `history.export_csv` | [`CAP_HISTORY_VALIDATE`] (4.5 MiB) |
+    /// | `history.import_preview`, `history.apply` | [`CAP_IMPORT`] (8 MiB) |
     ///
-    /// The store validators arrived in M2a; the import cap attaches when
-    /// its op arrives (`legacy.preview` was dropped with the owner's "no
-    /// legacy migration"). The match is exhaustive, so a new op cannot
+    /// `history.apply` carries the stored document (at most 4 MiB written)
+    /// plus the operations, an import's new entries included, so it shares
+    /// the import cap. `legacy.preview` was dropped with the owner's "no
+    /// legacy migration". The match is exhaustive, so a new op cannot
     /// compile without a cap.
     pub const fn request_cap(self) -> usize {
         match self {
@@ -119,6 +141,8 @@ impl Op {
             Op::Percent(_) => CAP_ENGINE,
             Op::Validate(Doc::History) => CAP_HISTORY_VALIDATE,
             Op::Validate(Doc::Settings | Doc::State | Doc::Countdowns) => CAP_STORE,
+            Op::History(HistoryOp::ExportCsv) => CAP_HISTORY_VALIDATE,
+            Op::History(HistoryOp::Apply | HistoryOp::ImportPreview) => CAP_IMPORT,
         }
     }
 }

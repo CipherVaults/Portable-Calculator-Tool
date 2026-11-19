@@ -20,9 +20,10 @@
 //                       (exponents, -0, 1e400, leading zeros, strings, null)
 //   meta            40  meta.versions with random bodies
 //   store           70  the four store validators (settings, state, history,
-//                       countdowns): a valid document, typed or value-level
-//                       mutations of one, a newer schemaVersion, or another
-//                       document's body
+//                       countdowns) and the three history ops (apply,
+//                       import_preview, export_csv): a valid request, typed
+//                       or value-level mutations of one, a newer
+//                       schemaVersion, or another request's body
 //   unknown-op      80  near-miss, long, empty and non-ASCII op names
 //   malformed      110  text-level damage: truncation, junk, duplicate keys,
 //                       deep nesting, lone-surrogate escapes, raw controls
@@ -30,7 +31,8 @@
 //   unicode         60  valid non-ASCII text in string fields
 // plus a fixed block of cap edges: every known op and two unknown ones at
 // cap-1, cap and cap+1 bytes (each op's own cap: 64 KiB engine ops, 256 KiB
-// and 4.5 MiB store validators), each as padded JSON, ASCII junk and 0xFF.
+// and 4.5 MiB store validators and CSV export, 8 MiB history apply and
+// import preview), each as padded JSON, ASCII junk and 0xFF.
 import { isUtf8 } from "node:buffer";
 
 export function mulberry32(seed) {
@@ -65,8 +67,9 @@ const WEIGHTS = [
   ["unicode", 60]
 ];
 
-// Valid M2a store documents (crates/pcalc-api/src/store.rs); the store
-// kind sends them as they are, mutated, or to another validator.
+// Valid store documents and history requests (crates/pcalc-api/src/store.rs,
+// history.rs); the store kind sends them as they are, mutated, or to
+// another op.
 export const STORE_DOCS = {
   "settings.validate": {
     schemaVersion: 1, checkUpdatesOnStartup: false, history: { enabled: true }, display: { grouping: "comma" },
@@ -80,11 +83,34 @@ export const STORE_DOCS = {
   "history.validate": {
     schemaVersion: 1,
     entries: [
-      { id: "h-1795400000000-0", timestampMs: 1795400000000, tool: "standard", calculator: "standard", calculatorLabel: "Standard",
-        inputs: { expr: [{ n: "2" }, { op: "+" }, { n: "2" }], angleUnit: "deg", mode: "standard" }, expressionText: "2 + 2", inputsText: "",
-        resultText: "4", copyText: "2 + 2 = 4", pinned: true, note: "عيد", engine: "calc-core 0.1.0" }
+      { id: "h-1795400000000-0", timestampMs: 1795400000000, tool: "date", calculator: "add", calculatorLabel: "Add / Subtract",
+        inputs: { date: "2026-01-31", operation: "add", years: "", months: "1", weeks: "", days: "-2", businessDays: "false" }, expressionText: "",
+        inputsText: "2026-01-31 + 1m -2d", resultText: "2026-02-26 (Thursday)", copyText: "2026-01-31 + 1 month\n= 2026-02-26", pinned: true, note: "عيد",
+        engine: "date-core 1.0.0" },
+      { id: "h-1795400000001-7", timestampMs: 1795400000001, tool: "percent", calculator: "tax", calculatorLabel: "Tax / VAT (Add)",
+        inputs: { inputA: "100", inputB: "15", mode: "add" }, expressionText: "", inputsText: "100 + 15%", resultText: "Total: 115.00 · Tax: 15.00",
+        copyText: "Total: 115.00", pinned: false, note: null, engine: "percent-core 2.3.0" }
     ]
   },
+  "history.apply": {
+    doc: { schemaVersion: 1, entries: [{ id: "h-1795400000001-7", timestampMs: 1795400000001, tool: "percent", calculator: "tax", calculatorLabel: "Tax / VAT (Add)",
+        inputs: { inputA: "100", inputB: "15", mode: "add" }, expressionText: "", inputsText: "100 + 15%", resultText: "Total: 115.00 · Tax: 15.00",
+        copyText: "Total: 115.00", pinned: false, note: null, engine: "percent-core 2.3.0" }] },
+    ops: [{ add: { id: "h-1795400000000-0", timestampMs: 1795400000000, tool: "date", calculator: "add", calculatorLabel: "Add / Subtract",
+        inputs: { date: "2026-01-31", operation: "add", years: "", months: "1", weeks: "", days: "-2", businessDays: "false" }, expressionText: "",
+        inputsText: "2026-01-31 + 1m -2d", resultText: "2026-02-26 (Thursday)", copyText: "2026-01-31 + 1 month\n= 2026-02-26", pinned: true, note: "عيد",
+        engine: "date-core 1.0.0" } }, { pin: { id: "h-1795400000001-7", pinned: true } }, { note: { id: "h-1795400000001-7", note: "x" } }, { delete: ["h-1-0"] }]
+  },
+  "history.import_preview": {
+    format: "portable-calculator-export", formatVersion: 1, appVersion: "0.1.0", exportedAtMs: 1795400000002,
+    history: { schemaVersion: 1, entries: [{ id: "h-1795400000000-0", timestampMs: 1795400000000, tool: "date", calculator: "add", calculatorLabel: "Add / Subtract",
+        inputs: { date: "2026-01-31", operation: "add", years: "", months: "1", weeks: "", days: "-2", businessDays: "false" }, expressionText: "",
+        inputsText: "2026-01-31 + 1m -2d", resultText: "2026-02-26 (Thursday)", copyText: "2026-01-31 + 1 month\n= 2026-02-26", pinned: true, note: "عيد",
+        engine: "date-core 1.0.0" }, { id: "h-2-0" }] }, countdowns: null, settings: null
+  },
+  "history.export_csv": { schemaVersion: 1, entries: [{ id: "h-1795400000001-7", timestampMs: 1795400000001, tool: "percent", calculator: "tax", calculatorLabel: "Tax / VAT (Add)",
+        inputs: { inputA: "100", inputB: "15", mode: "add" }, expressionText: "", inputsText: "100 + 15%", resultText: "Total: 115.00 · Tax: 15.00",
+        copyText: "Total: 115.00", pinned: false, note: null, engine: "percent-core 2.3.0" }] },
   "countdowns.validate": {
     schemaVersion: 1,
     items: [{ id: "c-1", label: "New year", targetDate: "2026-12-31", targetTime: "09:00", createdAtMs: 1, savedAtMs: 2, finishedSeenAtMs: null }]
@@ -301,7 +327,7 @@ export function randomRequests({ seed, count, knownOps, capOf, dateSeeds }) {
   const clone = (v) => JSON.parse(JSON.stringify(v));
 
   // Fixed block: cap edges for every op.
-  const capOps = [...knownOps, "history.import_preview", "nope"];
+  const capOps = [...knownOps, "legacy.preview", "nope"];
   for (const op of capOps) {
     const cap = capOf(op);
     const sample = parsedSeeds.find((s) => s.op === op);
@@ -400,7 +426,7 @@ export function randomRequests({ seed, count, knownOps, capOf, dateSeeds }) {
           "." + known.split(".")[1],
           "calc_" + known.split(".")[1],
           "calc.press",
-          "history.import_preview",
+          "history.import",
           "legacy.preview",
           "units.convert",
           "",

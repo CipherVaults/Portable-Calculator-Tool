@@ -97,7 +97,9 @@ fn main() {
             commands::engine_call,
             commands::store_load,
             commands::store_save,
+            commands::store_save_if,
             commands::store_clear,
+            commands::export_file,
             commands::is_smoke_test,
             commands::report_smoke_result,
         ])
