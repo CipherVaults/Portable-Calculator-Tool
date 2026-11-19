@@ -67,6 +67,8 @@ It ships as a **phone-first PWA** on GitHub Pages and a **Windows desktop app** 
 
 **Integration owner:** from receipt, **the new executor on Ahmed Emara's account** owns integration: commits, pushes, records and the release gate under the owner's authority. The previous coordinator (Claude on the original account) stops coordinating this repo. There must be one current-state owner, not two.
 
+**Same PC (confirmed by Ahmed, 2026-11-19):** the new account runs on the same Windows machine. The uncommitted M3 work in this working tree, the local kit and the installed toolchain (Rust 1.99.1 + wasm32, Edge, Node, `gh`) carry over as they are. No `WIP:` push is needed for the switch. The previous account's Claude project memory was also copied to `~/.claude/projects/D--Claude-Projects-Portable-Calculator-Tool/memory/`, which Claude Code reads for this folder. If the new account uses a separate Claude data folder, copy it from the kit's `memory/`. **The GitHub CLI login is per Windows user:** check that `gh auth status` shows an account with write access to CipherVaults, and set your own `git config user.name` and `user.email` in this repo if commits should carry your identity.
+
 **Recipient limits:** the new account does **not** see the previous Claude conversations, their background workflows, their scheduled prompts or their memory. Everything it needs is in this repo, plus the local kit (`D:\Claude Projects\_Handoff kit - Portable Calculator\`) on the original Windows machine.
 
 **Live state at handoff** (not inherited):
