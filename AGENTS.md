@@ -80,3 +80,13 @@ Build `engine.wasm` through `scripts/build-wasm.mjs`, never a bare `cargo build`
 ## Reporting and stopping
 
 Report the concrete result, the exact artifacts each check applied to, what was not run, and the next permitted action. Update only the PBS records whose answers changed.
+
+**Keep the records (owner rule, 2026-11-20).** At every milestone and every checkpoint, before the session ends:
+1. Update the PBS records whose answers changed: [CURRENT_STATE](Documentation/pbs/CURRENT_STATE.md), [CONTINUATION_STATE](Documentation/pbs/CONTINUATION_STATE.md), the [Ledger](Documentation/pbs/EXECUTION_AND_CODING_LEDGER.md) (a new E-entry), the [ROADMAP](Documentation/3-%20ROADMAP.md) and the [Source map](Documentation/pbs/SOURCE_OWNERSHIP_MAP.md). Also update the specialist records when their subject changed: [TESTING_AND_VERIFICATION](Documentation/pbs/TESTING_AND_VERIFICATION.md) (a new check, count or budget), [SECURITY_HARDENING_DOSSIER](Documentation/pbs/SECURITY_HARDENING_DOSSIER.md) (a control or finding), [FAILURE_INTELLIGENCE](Documentation/pbs/FAILURE_INTELLIGENCE.md) (a real failure or near-miss) and [ACCEPTANCE_RECORD](Documentation/pbs/ACCEPTANCE_RECORD.md) (an owner check or acceptance).
+2. Update [HANDOFF.md](HANDOFF.md) §2 (state), §3 (next steps) and §3a (ownership and live state).
+3. Update [2- ARCHITECTURE.md](Documentation/2-%20ARCHITECTURE.md) when the structure changes: a crate, an op family, a store, a tool, a script, a CI job or a toolchain version. Update [1- PROJECT_CONTEXT.md](Documentation/1-%20PROJECT_CONTEXT.md) when scope or people change.
+4. Add a session section to [4- SESSION_SUMMARY.md](Documentation/4-%20SESSION_SUMMARY.md) for every substantive session, in its existing format.
+5. Add a brief to [Documentation/workflows/](Documentation/workflows/README.md) for any new kind of workflow, with no local paths.
+6. Commit the records (explicit paths, the Git & GitHub rhythm), push `dev` and verify the push.
+
+Never write local user paths, scratch or temp paths, or email addresses into these files: the repository is public.
