@@ -7,8 +7,9 @@
 // with = + - @ tab or CR gets a ' first), with a UTF-8 byte order mark
 // so spreadsheet apps read the text right.
 //   - web: a Blob download named Portable-Calculator-<yyyymmdd-hhmmss>.json
-//     (or .csv), and "Copy export to clipboard" for browsers that cannot
-//     save a file (an iOS home-screen app);
+//     (or .csv; the share sheet in an iOS home-screen app), and "Copy
+//     export to clipboard" for browsers that cannot save a file; where
+//     neither works, the panel shows the export text itself, selected;
 //   - desktop: export_file writes a new file of that name into the
 //     Downloads folder (never overwriting one) and the panel shows its
 //     full path. No dialog plugin (crates/pcalc-store/src/export.rs).
@@ -88,5 +89,5 @@
     return ns.historyStore.previewImport(text);
   }
 
-  ns.historyIO = Object.freeze({ FORMAT, FORMAT_VERSION, IMPORT_MAX_BYTES, stamp, exportObject, exportJson, exportCsv, copyExport, previewFile });
+  ns.historyIO = Object.freeze({ FORMAT, FORMAT_VERSION, IMPORT_MAX_BYTES, stamp, exportObject, jsonText, exportJson, exportCsv, copyExport, previewFile });
 })();

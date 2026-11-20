@@ -1276,7 +1276,12 @@ const P_LINES = (key) => `[...document.querySelectorAll("#${key}Result .result-m
 // The History panel (plan B10, M3), its budgets, export, import and the ± key.
 // Under 4x CPU throttling (a mid-range phone): about 60, 60 and 40 ms on
 // one unthrottled desktop core, with room for a slower CI runner.
-const HISTORY_BUDGET_MS = { render: 250, search: 250, more: 150 };
+// pin: one change (a note) with all 2,200 rows on screen (the reviewer measured 2,020 ms for a pin
+// before rows were reused); record: one recorded entry with 2,200 stored
+// (the engine applies and the store checks the whole document on the main
+// thread: 369-482 ms measured in M3; a Worker is planned with M3b's
+// auto-save, see spec 7). Both at 4x CPU.
+const HISTORY_BUDGET_MS = { render: 250, search: 250, more: 150, pin: 700, record: 700 };
 const SEED_HISTORY = `(async () => {
   const NOW = Date.now();
   const entries = [];
@@ -1387,6 +1392,62 @@ async function historyChecks(edgePath, url, shots) {
     expect("history.2200-search-within-budget", search.ms <= HISTORY_BUDGET_MS.search && search.rows > 0, JSON.stringify(search) + ` budget ${HISTORY_BUDGET_MS.search} ms`);
     expect("history.2200-show-more-within-budget", more.rows === 120 && more.ms <= HISTORY_BUDGET_MS.more, JSON.stringify(more) + ` budget ${HISTORY_BUDGET_MS.more} ms`);
 
+    // ---- "Your history data" above the list, whatever the row count ----
+    const dataTop = await json(tab, `(() => { const p = document.querySelector("#pane .pane-panel"); if (p) p.scrollTop = 0; const r = document.getElementById("historyDataToggle").getBoundingClientRect(); return { top: r.top, bottom: r.bottom, vh: innerHeight, before: document.getElementById("historyDataToggle").compareDocumentPosition(document.getElementById("historyList")) & 4 }; })()`);
+    expect("history.data-actions-above-the-list", dataTop.bottom <= dataTop.vh && dataTop.top >= 0 && dataTop.before === 4, JSON.stringify(dataTop));
+
+    // ---- every row loaded: a pin and a recorded entry, timed (4x CPU) ----
+    // The list draws again after every change; rows whose entry did not
+    // change are reused, so a pin with 2,200 rows on screen stays quick.
+    await tab.evaluate(`(() => { const m = document.getElementById("historyMore"); for (let i = 0; i < 60 && !m.hidden; i++) m.click(); return true; })()`);
+    const pinTarget = await json(tab, `(() => { const e = window.PCalc.historyStore.entries().filter((x) => x.pinned)[150]; const li = document.querySelector("li[data-value='" + e.id + "']"); li.querySelector("button[data-value='more']").click(); return { id: e.id, rows: document.querySelectorAll(".hist-row").length }; })()`);
+    await edge.cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 }, tab.sessionId);
+    const MUTATION = (body) => `(async () => {
+      const t0 = performance.now();
+      ${body}
+      await window.PCalc.historyStore.idle();
+      const rows = document.querySelectorAll(".hist-row");
+      void (rows.length && rows[rows.length - 1].getBoundingClientRect().bottom);
+      return { ms: Math.round((performance.now() - t0) * 10) / 10, rows: rows.length, nodes: document.getElementById("historyPanel").getElementsByTagName("*").length };
+    })()`;
+    // (a note: a pin or unpin at the caps would also move the 2,000 cap)
+    const unpin = await json(tab, MUTATION(`await window.PCalc.historyStore.note(${JSON.stringify(pinTarget.id)}, "timed");`));
+    const recorded = await json(tab, MUTATION(`await window.PCalc.historyStore.record({ tool: "percent", calculator: "change", calculatorLabel: "Percentage Change", inputs: { inputA: "1", inputB: "3" }, inputsText: "1 → 3", resultText: "200.00% increase", copyText: "200.00% increase" });`));
+    await edge.cdp.send("Emulation.setCPUThrottlingRate", { rate: 1 }, tab.sessionId);
+    const repinned = await json(tab, `(async () => { await window.PCalc.historyStore.note(${JSON.stringify(pinTarget.id)}, ""); return window.PCalc.historyStore.entries().filter((x) => x.pinned).length; })()`);
+    Object.assign(timings, { pinAllRowsMs: unpin.ms, recordAllRowsMs: recorded.ms, rowsLoaded: pinTarget.rows, panelNodes: unpin.nodes });
+    expect("history.2200-pin-all-rows-within-budget", pinTarget.rows === 2200 && unpin.ms <= HISTORY_BUDGET_MS.pin && repinned === 200, JSON.stringify({ unpin, pinTarget, repinned }) + ` budget ${HISTORY_BUDGET_MS.pin} ms`);
+    expect("history.2200-record-within-budget", recorded.ms <= HISTORY_BUDGET_MS.record, JSON.stringify(recorded) + ` budget ${HISTORY_BUDGET_MS.record} ms`);
+
+    // ---- Delete a row far down: Undo is on screen, then focus comes back ----
+    const deep = await json(tab, `(() => { const li = document.querySelectorAll(".hist-row")[150]; li.scrollIntoView({ block: "center" }); return li.getAttribute("data-value"); })()`);
+    await wait(80);
+    await tab.tap(`li[data-value='${deep}'] button[data-value='more']`);
+    await tab.tap(`li[data-value='${deep}'] button[data-value='delete']`);
+    await waitFor(tab, `!window.PCalc.historyStore.entries().some((e) => e.id === ${JSON.stringify(deep)}) && !document.getElementById("historyUndo").hidden`, 5000);
+    await wait(80);
+    const undoBox = await json(tab, `(() => { const r = document.getElementById("historyUndo").getBoundingClientRect(); return { top: r.top, bottom: r.bottom, vh: innerHeight, live: document.getElementById("historyUndo").getAttribute("role") }; })()`);
+    expect("history.undo-bar-on-screen-after-a-deep-delete", undoBox.top >= 0 && undoBox.bottom <= undoBox.vh && undoBox.bottom > 0 && undoBox.live === null, JSON.stringify(undoBox));
+    await shot("390.undo-after-deep-delete");
+    await tab.tap("#historyUndoBtn");
+    await waitFor(tab, `window.PCalc.historyStore.entries().some((e) => e.id === ${JSON.stringify(deep)})`, 5000);
+    await wait(100);
+    const afterUndo = await json(tab, `(() => { const a = document.activeElement; const li = a && a.closest ? a.closest("li.hist-row") : null; return { tag: a ? a.tagName : null, value: a ? a.getAttribute("data-value") : null, row: li ? li.getAttribute("data-value") : null }; })()`);
+    expect("history.undo-focuses-the-restored-row", afterUndo.value === "restore" && afterUndo.row === deep, JSON.stringify({ afterUndo, deep }));
+
+    // ---- Esc in the search field: clears the query, then closes to the toggle ----
+    await tab.evaluate(`(() => { const p = document.querySelector("#pane .pane-panel"); if (p) p.scrollTop = 0; return true; })()`);
+    await tab.tap("#historySearch");
+    await tab.type("result 1");
+    await wait(60);
+    await tab.key("Escape");
+    await wait(80);
+    const escOnce = await json(tab, `({ value: document.getElementById("historySearch").value, open: !document.getElementById("pane").hidden, focus: document.activeElement.id })`);
+    await tab.key("Escape");
+    await wait(150);
+    const escTwice = await json(tab, `({ open: !document.getElementById("pane").hidden, focus: document.activeElement.id })`);
+    expect("history.search-esc-clears-then-closes-to-the-toggle", escOnce.value === "" && escOnce.open && escOnce.focus === "historySearch" && !escTwice.open && escTwice.focus === "paneToggle", JSON.stringify({ escOnce, escTwice }));
+
     // ---- layout at 360 / 390 / 440, plus a note, Clear all and ar-XB ----
     for (const w of [360, 390, 440]) {
       await tab.viewport(w, 844);
@@ -1395,6 +1456,9 @@ async function historyChecks(edgePath, url, shots) {
     }
     await tab.viewport(390, 844);
     await openHistory();
+    await tab.evaluate(`(() => { const p = document.querySelector("#pane .pane-panel"); if (p) p.scrollTop = 0; document.querySelector(".hist-row button[data-value='more']").click(); return true; })()`);
+    await wait(60);
+    await record("390.row-actions-open", smallInputs);
     await tab.evaluate(`document.querySelector(".hist-row button[data-value='note']").click(); true`);
     await wait(60);
     await record("390.note-editing", async () => {
@@ -1402,7 +1466,10 @@ async function historyChecks(edgePath, url, shots) {
       return n && n.dir === "auto" && n.max === 200 && n.focused ? smallInputs() : "note input " + JSON.stringify(n);
     });
     await tab.evaluate(`document.getElementById("historyNoteCancel").click(); true`);
-    await tab.evaluate(`document.getElementById("historyClearBtn").click(); true`);
+    await tab.tap("#historyDataToggle");
+    await wait(60);
+    await record("390.data-open", smallInputs);
+    await tab.tap("#historyClearBtn");
     await wait(60);
     await record("390.clear-asked", async () => {
       const c = await json(tab, `({ keep: document.getElementById("historyKeepPinned").checked, text: document.getElementById("historyClearConfirm").textContent })`);
@@ -1421,6 +1488,8 @@ async function historyChecks(edgePath, url, shots) {
     // ---- Restore by a real tap ----
     await openHistory();
     const target = await json(tab, `(() => { const e = window.PCalc.historyStore.entries().find((x) => x.tool === "percent" && !x.pinned); return { id: e.id, a: e.inputs.inputA, b: e.inputs.inputB }; })()`);
+    await tab.evaluate(`(() => { document.querySelector("li[data-value='${target.id}']").scrollIntoView({ block: "center" }); return true; })()`);
+    await wait(60);
     await tab.tap(`li[data-value='${target.id}'] .hist-main`);
     await waitFor(tab, `document.getElementById("changeOrig") && document.getElementById("changeOrig").value === ${JSON.stringify(target.a)}`);
     await wait(100);
@@ -1436,6 +1505,28 @@ async function historyChecks(edgePath, url, shots) {
     await wait(150);
     const afterSign = await json(tab, `({ value: document.getElementById("changeOrig").value, focus: document.activeElement.id, mode: document.getElementById("changeOrig").inputMode })`);
     expect("history.sign-key-real-tap", afterSign.value === "-" + beforeSign && afterSign.focus === "changeOrig" && afterSign.mode === "decimal" && sign.w >= 44 && sign.h >= 44, JSON.stringify({ beforeSign, afterSign, sign }));
+    // The caret stays by the same digit (moved by the sign).
+    await tab.evaluate(`(() => { const n = document.getElementById("changeOrig"); n.value = "12.5"; n.dispatchEvent(new Event("input", { bubbles: true })); n.setSelectionRange(1, 1); return true; })()`);
+    await tab.tap("#changeOrigSign");
+    await wait(100);
+    const caret = await json(tab, `({ v: document.getElementById("changeOrig").value, s: document.getElementById("changeOrig").selectionStart, f: document.activeElement.id })`);
+    expect("history.sign-key-keeps-the-caret", caret.v === "-12.5" && caret.s === 2 && caret.f === "changeOrig", JSON.stringify(caret));
+    // Use result: the value goes into the field that had focus, which
+    // takes the focus again (the phone keyboard comes up there).
+    await tab.tap("#changeNew");
+    // (the keyboard goes down first: while it is up the bar with the
+    // History toggle steps aside)
+    await tab.evaluate(`document.activeElement.blur(); true`);
+    await wait(60);
+    await openHistory();
+    const useRow = await json(tab, `(() => { const p = document.querySelector("#pane .pane-panel"); if (p) p.scrollTop = 0; const e = window.PCalc.historyStore.entries().find((x) => x.tool === "percent" && window.PCalc.historyPanel.resultValue(x)); const li = document.querySelector("li[data-value='" + e.id + "']"); return { id: e.id, v: window.PCalc.historyPanel.resultValue(e).text, present: Boolean(li), rows: document.querySelectorAll(".hist-row").length, first: (document.querySelector(".hist-row") || { getAttribute: () => null }).getAttribute("data-value"), more: li ? Boolean(li.querySelector("button[data-value='more']")) : null, html: li ? li.textContent.slice(0, 120) : null }; })()`);
+    await tab.evaluate(`(() => { if (!document.querySelector("li[data-value='${useRow.id}'] button[data-value='use']")) document.querySelector("li[data-value='${useRow.id}'] button[data-value='more']").click(); document.querySelector("li[data-value='${useRow.id}'] button[data-value='use']").scrollIntoView({ block: "center" }); return true; })()`);
+    await wait(80);
+    const useBox = await json(tab, `(() => { const b = document.querySelector("li[data-value='${useRow.id}'] button[data-value='use']"); const r = b.getBoundingClientRect(); const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return { top: r.top, h: r.height, hit: hit ? (hit.id || hit.getAttribute("data-value") || hit.className) : null, open: document.getElementById("pane").hidden }; })()`);
+    await tab.tap(`li[data-value='${useRow.id}'] button[data-value='use']`);
+    await wait(150);
+    const used = await json(tab, `({ v: document.getElementById("changeNew").value, f: document.activeElement.id, pane: document.getElementById("pane").hidden })`);
+    expect("history.use-result-focuses-the-field", used.v === useRow.v && used.f === "changeNew" && used.pane === true, JSON.stringify({ used, useRow, useBox }));
     await tab.tap("#changeOrigSign");
     await tab.evaluate(`document.activeElement.blur(); true`);
     await wait(100);
@@ -1468,7 +1559,7 @@ async function historyChecks(edgePath, url, shots) {
     }
     const status = await tab.evaluate(`document.getElementById("historyStatus").textContent`);
     expect("history.export-json-download", Boolean(exported) && exported.format === "portable-calculator-export" && exported.formatVersion === 1 && exported.history.entries.length === 2200 &&
-      Boolean(exported.countdowns) && Boolean(exported.settings) && status === "Downloaded " + jsonName && tab.logs.consoleErrors.length === 0,
+      Boolean(exported.countdowns) && Boolean(exported.settings) && status.startsWith("Download started: " + jsonName) && tab.logs.consoleErrors.length === 0,
       JSON.stringify({ jsonName, status, entries: exported && exported.history.entries.length, errors: tab.logs.consoleErrors.slice(0, 2) }));
     await tab.evaluate(`document.getElementById("historyExportCsv").click(); true`);
     const csvName = await waitFile(/^Portable-Calculator-\d{8}-\d{6}.*\.csv$/);

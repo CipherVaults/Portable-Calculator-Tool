@@ -211,6 +211,10 @@
     // Start fresh (confirmed in the banner): backup, remove, write anew.
     ctx.reset = async (name) => {
       const r = await store.clear(name);
+      if (!r.ok && r.code === "recovered") {
+        // The stored document is valid again: kept and reloaded (Retry).
+        return ctx.retry(name).then(() => r);
+      }
       if (!r.ok) {
         ctx.lastSaveError = { name, code: r.code };
       } else {

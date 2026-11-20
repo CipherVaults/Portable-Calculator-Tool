@@ -4,37 +4,43 @@
 //
 //   - "Saved locally on this device." (or why not), then a search field:
 //     case-insensitive, digits normalised (Western, Arabic-Indic and
-//     Persian digits all match each other), every word must match;
+//     Persian digits all match each other), every word must match (Esc
+//     clears a query first, then closes the pane);
 //   - filter chips All / Pinned / one per tool that records history;
+//   - the count, and "Your history data" (Export JSON / CSV, Copy export,
+//     Import with a preview, Delete history with "Keep pinned" on by
+//     default) ABOVE the list, so it is reachable with any number of rows;
 //   - the entries grouped Today / Yesterday / This week / Earlier by the
 //     LOCAL calendar day (today is passed in: groupOf(ms, todayIso));
 //   - each row: the tool tag, the calculator, muted inputs (and the
 //     expression), the result in gold, the note; the row itself is the
 //     Restore button (Enter or a tap): the owning tool opens with the
 //     stored inputs and computes again, so the result reads in the current
-//     language; Copy, Use result (the value into the current tool's
-//     focused or first compatible field), Pin, Note (at most 200, dir=auto)
-//     and Delete with a 5 s Undo;
-//   - Export JSON / CSV, Copy export (web), Import (preview, then one
-//     write), and Clear all (confirmed with the count; "Keep pinned" on by
-//     default; also undoable for 5 s).
+//     language. Its "Actions" button opens Copy, Use result (the value into
+//     the current tool's focused or first compatible field, which then
+//     takes the focus), Pin, Note (at most 200, dir=auto) and Delete;
+//   - Undo for a delete or Delete history: a bar at the bottom edge of the
+//     sheet, for 10 s, held open while it has focus or the pointer, with
+//     Dismiss. It puts back exactly what the write removed.
 // Rendering is windowed: the first PAGE rows of the filtered list, then
 // "Show more" (and, where IntersectionObserver exists, more as the end of
-// the list scrolls into view), so 2,200 entries stay quick on a phone.
+// the list scrolls into view), so 2,200 entries stay quick on a phone. A
+// row whose entry did not change is reused when the list is drawn again, so
+// a pin, a note or another tab's write rebuilds one row, not all of them.
 (function () {
   "use strict";
   const ns = window.PCalc;
   const { el, show, flag, value, withValues } = ns.dom;
   const PAGE = 60;
-  const UNDO_MS = 5000;
+  const UNDO_MS = 10000;
   // The tools that record history today (their filter chips).
   const TOOLS = Object.freeze(["date", "percent"]);
   const DAY_MS = 86400000;
 
   // Session state (kept while the pane re-renders).
-  const ui = { query: "", filter: "all", limit: PAGE, noteFor: null, clearing: false, keepPinned: true, preview: null, undo: null, message: null };
+  const ui = { query: "", filter: "all", limit: PAGE, noteFor: null, actionsFor: null, dataOpen: false, clearing: false, keepPinned: true, preview: null, undo: null, message: null };
   let ctx = null;
-  let mounted = null; // {panel, unsubscribe, observer, say}
+  let mounted = null; // {panel, unsubscribe, observer, say, rows}
   let lastField = null; // the tool field that last had focus (Use result)
   let watching = false;
 
@@ -63,14 +69,14 @@
 
   const norm = (s) => ns.format.normalizeDigits(String(s || "")).toLowerCase();
   const terms = (query) => norm(query).split(/\s+/).filter(Boolean);
-  const keys = new WeakMap();
+  // Search keys by entry id (an id's texts never change; its note can).
+  const keys = new Map();
   function searchKey(entry, toolName) {
-    let k = keys.get(entry);
-    if (k === undefined) {
-      k = norm([toolName, entry.calculatorLabel, entry.expressionText, entry.inputsText, entry.resultText, entry.note || ""].join("\n"));
-      keys.set(entry, k);
-    }
-    return k;
+    const c = keys.get(entry.id);
+    if (c && c.note === entry.note && c.tool === toolName) return c.key;
+    const key = norm([toolName, entry.calculatorLabel, entry.expressionText, entry.inputsText, entry.resultText, entry.note || ""].join("\n"));
+    keys.set(entry.id, { note: entry.note, tool: toolName, key });
+    return key;
   }
   function matches(entry, words, toolName) {
     if (words.length === 0) return true;
@@ -79,16 +85,18 @@
   }
 
   // The value "Use result" inserts: {kind: "date", text: "2026-02-26"} or
-  // {kind: "number", text: "115.00"}, or null.
+  // {kind: "number", text: "115.00"}, or null. Groups of three may be
+  // separated by a comma, a space, a no-break space or a (narrow) thin
+  // space (format.js grouping), and are dropped.
   function resultValue(entry) {
     const res = ns.format.normalizeDigits(entry.resultText || "");
     if (entry.tool === "date" && (entry.calculator === "add" || entry.calculator === "info")) {
       const m = /\b(\d{4}-\d{2}-\d{2})\b/.exec(res) || /\b(\d{4}-\d{2}-\d{2})\b/.exec(ns.format.normalizeDigits(entry.copyText || ""));
       return m ? { kind: "date", text: m[1] } : null;
     }
-    const m = /([-\u2212]?)(\d[\d,]*(?:\.\d+)?)/.exec(res);
+    const m = /([-\u2212]?)((?:\d{1,3}(?:[,\u0020\u00a0\u2009\u202f]\d{3})+|\d+)(?:\.\d+)?)/.exec(res);
     if (!m) return null;
-    const text = (m[1] ? "-" : "") + m[2].replace(/,/g, "");
+    const text = (m[1] ? "-" : "") + m[2].replace(/[,\u0020\u00a0\u2009\u202f]/g, "");
     return /^-?\d+(?:\.\d+)?$/.test(text) ? { kind: "number", text } : null;
   }
 
@@ -181,6 +189,15 @@
     return ok;
   }
 
+  // The words go to the current tool's own polite region once the pane has
+  // closed (the panel's status line is no longer on screen then).
+  // (each tool's one polite region is "<route>ResultLive").
+  function sayInView(words) {
+    const route = ctx.shell && typeof ctx.shell.route === "function" ? ctx.shell.route() : "";
+    const region = route ? document.getElementById(route + "ResultLive") : null;
+    if (region) ns.announcer.create(region).say(words);
+  }
+
   function useResult(entry) {
     const v = resultValue(entry);
     const target = v ? targetFor(v) : null;
@@ -191,57 +208,92 @@
     target.value = v.text;
     target.dispatchEvent(new Event("input", { bubbles: true }));
     message("history.msg.used", { value: ns.dom.ltrValue(v.text), field: labelOf(target) });
+    const node = mounted && mounted.panel.querySelector("#historyStatus");
+    const words = node ? node.textContent : "";
     if (ctx.shell && ctx.shell.modal() === "pane") ctx.shell.closeModal({ restoreFocus: false });
+    // The field takes the focus (and so the phone keyboard comes up).
+    if (typeof target.focus === "function") target.focus({ preventScroll: true });
     if (typeof target.scrollIntoView === "function") target.scrollIntoView({ block: "center" });
+    sayInView(words);
     return true;
   }
 
-  function startUndo(entries, key) {
-    if (ui.undo) window.clearTimeout(ui.undo.timer);
-    const undo = { entries, key, timer: 0 };
+  function stopUndoTimer() {
+    if (ui.undo && ui.undo.timer) window.clearTimeout(ui.undo.timer);
+    if (ui.undo) ui.undo.timer = 0;
+  }
+
+  // The bar closes after UNDO_MS, unless focus or the pointer is on it.
+  function armUndoTimer() {
+    const undo = ui.undo;
+    if (!undo) return;
+    stopUndoTimer();
     undo.timer = window.setTimeout(() => {
-      if (ui.undo === undo) {
-        ui.undo = null;
-        renderUndo();
-      }
+      if (ui.undo !== undo) return;
+      if (undo.held) return;
+      closeUndo();
     }, UNDO_MS);
-    ui.undo = undo;
+  }
+
+  function closeUndo() {
+    stopUndoTimer();
+    ui.undo = null;
+    renderUndo();
+  }
+
+  function startUndo(entries, key) {
+    stopUndoTimer();
+    ui.undo = { entries, key, timer: 0, held: false };
+    armUndoTimer();
     renderUndo();
   }
 
   async function undoNow() {
     const u = ui.undo;
     if (!u) return;
-    window.clearTimeout(u.timer);
-    ui.undo = null;
-    renderUndo();
+    closeUndo();
+    const ids = u.entries.map((e) => e.id);
     await ns.historyStore.putBack(u.entries);
     message("history.msg.restored", { count: fmtNum(u.entries.length), plural: u.entries.length });
+    // Focus the first entry that came back (the Undo button is gone).
+    const shown = new Set(ns.historyStore.entries().map((e) => e.id));
+    focusRow(ids.find((id) => shown.has(id)) || null);
   }
 
   async function remove(entry) {
-    const list = ns.historyStore.entries();
+    // The next row on screen (the filter applies) takes the focus.
+    const list = filtered().slice(0, ui.limit);
     const i = list.findIndex((e) => e.id === entry.id);
     const next = list[i + 1] || list[i - 1] || null;
     if (ui.noteFor === entry.id) ui.noteFor = null;
-    startUndo([entry], "history.undo.one");
-    await ns.historyStore.remove([entry.id]);
+    if (ui.actionsFor === entry.id) ui.actionsFor = null;
+    const r = await ns.historyStore.remove([entry.id]);
+    // Undo puts back what the write removed (another tab's note on it
+    // included); unsaved, the entry as shown here.
+    const gone = r.written ? r.removed : [entry];
+    if (gone.length > 0) {
+      startUndo(gone, "history.undo.one");
+      message("history.msg.cleared", { count: fmtNum(gone.length), plural: gone.length });
+    } else if (r.missing > 0) {
+      message("history.msg.missing");
+    }
     focusRow(next ? next.id : null);
   }
 
   async function togglePin(entry) {
-    await ns.historyStore.pin(entry.id, !entry.pinned);
+    const r = await ns.historyStore.pin(entry.id, !entry.pinned);
     const s = ns.historyStore.status();
-    if (!entry.pinned && s.lastApplied && s.lastApplied.pinLimit) message("history.msg.pinLimit", { max: fmtNum(200) });
+    if (r.missing > 0) message("history.msg.missing");
+    else if (!entry.pinned && s.lastApplied && s.lastApplied.pinLimit) message("history.msg.pinLimit", { max: fmtNum(200) });
     else message(entry.pinned ? "history.msg.unpinned" : "history.msg.pinned");
-    focusRow(entry.id, "pin");
+    focusRow(entry.id, r.missing > 0 ? null : "pin");
   }
 
   async function saveNote(entry, text) {
     ui.noteFor = null;
-    await ns.historyStore.note(entry.id, text);
-    message("history.msg.noteSaved");
-    focusRow(entry.id, "note");
+    const r = await ns.historyStore.note(entry.id, text);
+    message(r.missing > 0 ? "history.msg.missing" : "history.msg.noteSaved");
+    focusRow(entry.id, r.missing > 0 ? null : "note");
   }
 
   // ---- rendering ---------------------------------------------------------------------
@@ -255,8 +307,12 @@
     });
   }
 
+  // An action of a row, named with its row ("Delete: Percentage Change,
+  // 100.00% increase"); Pin keeps its name and says its state by
+  // aria-pressed.
   function actionButton(key, text, entry, onClick, extra) {
-    const b = el("button", { className: "button hist-action", text, attrs: Object.assign({ type: "button", "data-value": key, "aria-describedby": "hist-r-" + entry.id }, extra || {}) });
+    const label = ctx.t("history.action.label", { action: text, label: entry.calculatorLabel, result: entry.resultText });
+    const b = el("button", { className: "button hist-action", text, attrs: Object.assign({ type: "button", "data-value": key, "aria-label": label }, extra || {}) });
     b.addEventListener("click", onClick);
     return b;
   }
@@ -288,39 +344,82 @@
     return el("div", { className: "hist-note-edit" }, [input, el("div", { className: "button-row" }, [save, cancel])]);
   }
 
-  function row(entry, group) {
+  function actions(entry) {
     const t = ctx.t;
-    const main = el("button", { className: "hist-main", attrs: { type: "button", "data-value": "restore", "aria-describedby": "historyRestoreHint" } }, [
+    const usable = resultValue(entry) !== null;
+    return el("div", { className: "hist-actions", attrs: { id: "hist-a-" + entry.id } }, [
+      actionButton("copy", t("history.copy"), entry, (e) => copy(entry, e.currentTarget)),
+      actionButton("use", t("history.use"), entry, () => useResult(entry), { disabled: !usable }),
+      actionButton("pin", t("history.pin"), entry, () => togglePin(entry), { "aria-pressed": entry.pinned ? "true" : "false" }),
+      actionButton("note", t("history.note"), entry, () => {
+        ui.noteFor = entry.id;
+        renderList();
+        const n = mounted && mounted.panel.querySelector("#historyNoteInput");
+        if (n) n.focus();
+      }),
+      actionButton("delete", t("history.delete"), entry, () => remove(entry))
+    ]);
+  }
+
+  // What a drawn row depends on besides its id (texts never change).
+  const signature = (entry, group) => [entry.timestampMs, entry.pinned, entry.note, group, ui.noteFor === entry.id, ui.actionsFor === entry.id].join("\u0001");
+
+  function row(entry, group) {
+    const sig = signature(entry, group);
+    const cached = mounted && mounted.rows.get(entry.id);
+    if (cached && cached.sig === sig) return cached.node;
+    const node = buildRow(entry, group);
+    if (mounted) mounted.rows.set(entry.id, { sig, node });
+    return node;
+  }
+
+  function buildRow(entry, group) {
+    const t = ctx.t;
+    const id = entry.id;
+    // The Restore button is named by its calculator and result; the tool,
+    // time and inputs describe it.
+    const main = el("button", { className: "hist-main", attrs: { type: "button", "data-value": "restore", "aria-labelledby": "hist-l-" + id + " hist-r-" + id, "aria-describedby": "hist-m-" + id + " hist-i-" + id + " historyRestoreHint" } }, [
       el("span", { className: "hist-meta" }, [
         el("span", { className: "hist-tag", text: toolName(entry.tool) }),
-        el("span", { className: "hist-label", text: entry.calculatorLabel, attrs: { dir: "auto" } }),
+        el("span", { className: "hist-label", text: entry.calculatorLabel, attrs: { dir: "auto", id: "hist-l-" + id } }),
         entry.pinned ? el("span", { className: "hist-pin", text: t("history.pinnedMark") }) : null,
-        el("span", { className: "hist-time", text: timeText(entry.timestampMs, group) })
+        el("span", { className: "hist-time", text: timeText(entry.timestampMs, group), attrs: { id: "hist-m-" + id } })
       ]),
-      entry.expressionText ? el("span", { className: "hist-inputs", text: entry.expressionText, attrs: { dir: "auto" } }) : null,
-      el("span", { className: "hist-inputs", text: entry.inputsText, attrs: { dir: "auto" } }),
-      el("span", { className: "hist-result", text: entry.resultText, attrs: { dir: "auto", id: "hist-r-" + entry.id } }),
+      el("span", { className: "hist-inputs", attrs: { dir: "auto", id: "hist-i-" + id } }, [
+        entry.expressionText ? el("span", { className: "hist-expr", text: entry.expressionText }) : null,
+        el("span", { text: entry.inputsText })
+      ]),
+      el("span", { className: "hist-result", text: entry.resultText, attrs: { dir: "auto", id: "hist-r-" + id } }),
       entry.note ? el("span", { className: "hist-note", text: entry.note, attrs: { dir: "auto" } }) : null
     ]);
     main.addEventListener("click", () => restore(entry));
-    const children = [main];
-    if (ui.noteFor === entry.id) children.push(noteEditor(entry));
-    else {
-      const usable = resultValue(entry) !== null;
-      children.push(el("div", { className: "hist-actions" }, [
-        actionButton("copy", t("history.copy"), entry, (e) => copy(entry, e.currentTarget)),
-        actionButton("use", t("history.use"), entry, () => useResult(entry), { disabled: !usable }),
-        actionButton("pin", t(entry.pinned ? "history.unpin" : "history.pin"), entry, () => togglePin(entry), { "aria-pressed": entry.pinned ? "true" : "false" }),
-        actionButton("note", t("history.note"), entry, () => {
-          ui.noteFor = entry.id;
-          renderList();
-          const n = mounted && mounted.panel.querySelector("#historyNoteInput");
-          if (n) n.focus();
-        }),
-        actionButton("delete", t("history.delete"), entry, () => remove(entry))
-      ]));
+    const open = ui.actionsFor === id;
+    const more = el("button", { className: "button hist-more-actions", text: t("history.actions"),
+      attrs: { type: "button", "data-value": "more", "aria-expanded": open ? "true" : "false", "aria-controls": "hist-a-" + id, "aria-label": t("history.action.label", { action: t("history.actions"), label: entry.calculatorLabel, result: entry.resultText }) } });
+    more.addEventListener("click", () => {
+      ui.actionsFor = ui.actionsFor === id ? null : id;
+      renderList();
+      focusRow(id, "more");
+    });
+    const children = [el("div", { className: "hist-line" }, [main, more])];
+    if (ui.noteFor === id) children.push(noteEditor(entry));
+    else if (open) children.push(actions(entry));
+    return el("li", { className: entry.pinned ? "hist-row is-pinned" : "hist-row", attrs: { "data-value": id } }, children);
+  }
+
+  // Makes `parent`'s element children exactly `nodes`, in order, touching
+  // only the positions that differ.
+  function patch(parent, nodes) {
+    const keep = new Set(nodes);
+    for (let i = 0; i < nodes.length; i++) {
+      const cur = parent.children[i] || null;
+      if (cur === nodes[i]) continue;
+      parent.insertBefore(nodes[i], cur);
+      // A row drawn anew takes its old node's place (the rows after it do
+      // not move).
+      if (cur && !keep.has(cur)) cur.remove();
     }
-    return el("li", { className: entry.pinned ? "hist-row is-pinned" : "hist-row", attrs: { "data-value": entry.id } }, children);
+    for (let kids = parent.children; kids.length > nodes.length; kids = parent.children) kids[kids.length - 1].remove();
   }
 
   function renderList() {
@@ -334,18 +433,31 @@
     const page = shown.slice(0, ui.limit);
     const today = ns.clock.todayIso();
     const groups = [];
+    const live = new Set();
     for (const e of page) {
       const g = groupOf(e.timestampMs, today);
       if (groups.length === 0 || groups[groups.length - 1].key !== g) groups.push({ key: g, rows: [] });
       groups[groups.length - 1].rows.push(row(e, g));
+      live.add(e.id);
     }
+    // Rows no longer drawn are forgotten.
+    for (const id of Array.from(mounted.rows.keys())) if (!live.has(id)) mounted.rows.delete(id);
     if (all.length === 0) show(list, [el("p", { className: "hist-empty", text: t("history.empty") })]);
     else if (shown.length === 0) show(list, [el("p", { className: "hist-empty", text: t("history.noMatch") })]);
     else {
-      show(list, groups.map((g) => el("section", { className: "hist-group", attrs: { "data-value": g.key } }, [
-        el("h3", { className: "hist-group-title", text: t("history.group." + g.key) }),
-        el("ul", { className: "hist-rows" }, g.rows)
-      ])));
+      // The groups and rows already on screen stay where they are; only
+      // what changed is inserted, moved or removed (a pin, a note or a new
+      // entry touches one row, not 2,200).
+      const sections = new Map(Array.from(list.children).filter((n) => n.localName === "section").map((n) => [n.getAttribute("data-value"), n]));
+      const wanted = groups.map((g) => {
+        const section = sections.get(g.key) || el("section", { className: "hist-group", attrs: { "data-value": g.key } }, [
+          el("h3", { className: "hist-group-title", text: t("history.group." + g.key) }),
+          el("ul", { className: "hist-rows" })
+        ]);
+        patch(section.querySelector("ul"), g.rows);
+        return section;
+      });
+      patch(list, wanted);
     }
     renderMore(shown.length - page.length);
     const filtering = ui.query.trim() !== "" || ui.filter !== "all";
@@ -398,7 +510,13 @@
     const n = ui.undo.entries.length;
     const b = el("button", { className: "button", text: ctx.t("history.undo"), attrs: { type: "button", id: "historyUndoBtn" } });
     b.addEventListener("click", () => undoNow());
-    show(node, [el("span", {}, withValues(ctx.t(ui.undo.key, { count: fmtNum(n), plural: n }))), b]);
+    const dismiss = el("button", { className: "button", text: ctx.t("history.undo.dismiss"), attrs: { type: "button", id: "historyUndoDismiss" } });
+    dismiss.addEventListener("click", () => {
+      closeUndo();
+      const s = mounted && mounted.panel.querySelector("#historySearch");
+      if (s) s.focus();
+    });
+    show(node, [el("span", { className: "hist-undo-text" }, withValues(ctx.t(ui.undo.key, { count: fmtNum(n), plural: n }))), b, dismiss]);
     flag(node, "hidden", false);
   }
 
@@ -425,12 +543,16 @@
     flag(confirm, "disabled", n === 0);
     const cancel = el("button", { className: "button", text: t("history.clear.cancel"), attrs: { type: "button", id: "historyClearCancel" } });
     confirm.addEventListener("click", async () => {
-      const gone = ns.historyStore.entries().filter((e) => !ui.keepPinned || !e.pinned);
+      const keepPinned = ui.keepPinned;
+      // What is pinned is decided on the stored document when it is
+      // written (an entry pinned in another window meanwhile is kept).
+      const before = ns.historyStore.entries().filter((e) => !keepPinned || !e.pinned);
       ui.clearing = false;
-      if (gone.length > 0) {
-        startUndo(gone, "history.undo.many");
-        await ns.historyStore.remove(gone.map((e) => e.id));
-      }
+      renderClear();
+      const r = await ns.historyStore.clearAll(keepPinned);
+      const gone = r.written ? r.removed : before;
+      if (gone.length > 0) startUndo(gone, "history.undo.many");
+      // One message (the Undo bar is not a live region).
       message("history.msg.cleared", { count: fmtNum(gone.length), plural: gone.length });
       const s = mounted && mounted.panel.querySelector("#historySearch");
       if (s) s.focus();
@@ -469,6 +591,7 @@
       children.push(el("p", { className: "status", attrs: { id: "historyImportSummary" } }, withValues(t("history.import.summary", {
         added: fmtNum(p.added), duplicates: fmtNum(p.duplicates), rejected: fmtNum(p.rejected)
       }))));
+      if (p.near > 0) children.push(el("p", { className: "hint", attrs: { id: "historyImportNear" } }, withValues(t("history.import.near", { count: fmtNum(p.near), plural: p.near }))));
       if (p.evicted > 0) children.push(el("p", { className: "hint" }, withValues(t("history.import.evicted", { count: fmtNum(p.evicted), plural: p.evicted }))));
       if (p.pinLimit) children.push(el("p", { className: "hint", text: t("history.import.pinLimit") }));
       const go = el("button", { className: "button primary", attrs: { type: "button", id: "historyImportConfirm" } }, withValues(t("history.import.confirm", { count: fmtNum(p.added), plural: p.added })));
@@ -497,6 +620,35 @@
     renderPreview();
     const b = mounted && mounted.panel.querySelector("#historyImportBtn");
     if (b) b.focus();
+  }
+
+  // The last resort of an export that could not be saved or copied: the
+  // text in a read-only field, selected, with Select all.
+  function renderExportText(text) {
+    if (!mounted) return;
+    const box = mounted.panel.querySelector("#historyExportBox");
+    if (text === null) {
+      show(box, []);
+      flag(box, "hidden", true);
+      return;
+    }
+    const area = el("textarea", { className: "input hist-export-text", attrs: { id: "historyExportText", readonly: true, spellcheck: "false", dir: "ltr", "aria-label": ctx.t("history.exportText.label") } });
+    area.value = text;
+    const select = el("button", { className: "button", text: ctx.t("history.exportText.select"), attrs: { type: "button", id: "historyExportSelect" } });
+    select.addEventListener("click", () => {
+      area.focus();
+      area.select();
+    });
+    const close = el("button", { className: "button", text: ctx.t("history.import.close"), attrs: { type: "button", id: "historyExportClose" } });
+    close.addEventListener("click", () => {
+      renderExportText(null);
+      const b = mounted && mounted.panel.querySelector("#historyExportJson");
+      if (b) b.focus();
+    });
+    show(box, [el("p", { className: "hint", text: ctx.t("history.exportText.hint") }), area, el("div", { className: "button-row" }, [select, close])]);
+    flag(box, "hidden", false);
+    area.focus();
+    area.select();
   }
 
   // Focus after a re-render: the row's button `which` (or its Restore),
@@ -542,9 +694,24 @@
   async function exportNow(kind) {
     if (!ctx) return null;
     const r = kind === "csv" ? await ns.historyIO.exportCsv(ctx) : kind === "copy" ? await ns.historyIO.copyExport(ctx) : await ns.historyIO.exportJson(ctx);
-    if (kind === "copy") message(r.ok ? "history.msg.copiedExport" : "history.msg.copyFailed");
-    else if (!r.ok) message("history.msg.exportFailed");
-    else if (r.path) message("history.msg.savedTo", { path: ns.dom.ltr(r.path) });
+    renderExportText(null);
+    if (kind === "copy") {
+      if (r.ok) message("history.msg.copiedExport");
+      else {
+        // No clipboard (an iOS home-screen app may refuse it): the text
+        // itself, selected, is the last way out.
+        message("history.msg.exportText");
+        ui.dataOpen = true;
+        syncData();
+        renderExportText(ns.historyIO.jsonText(ctx));
+      }
+    } else if (!r.ok) {
+      message("history.msg.exportFailed");
+      ui.dataOpen = true;
+      syncData();
+      if (kind === "json") renderExportText(ns.historyIO.jsonText(ctx));
+    } else if (r.path) message("history.msg.savedTo", { path: ns.dom.ltr(r.path) });
+    else if (r.shared) message("history.msg.shared", { name: ns.dom.ltr(r.name) });
     else message("history.msg.downloaded", { name: ns.dom.ltr(r.name) });
     return r;
   }
@@ -554,6 +721,8 @@
     input.value = "";
     if (!file) return;
     ui.clearing = false;
+    ui.dataOpen = true;
+    syncData();
     renderClear();
     ui.preview = await ns.historyIO.previewFile(file);
     renderPreview();
@@ -561,10 +730,23 @@
     if (target) target.focus();
   }
 
+  // "Your history data" opens and closes above the list.
+  function syncData() {
+    if (!mounted) return;
+    const toggle = mounted.panel.querySelector("#historyDataToggle");
+    const box = mounted.panel.querySelector("#historyData");
+    toggle.setAttribute("aria-expanded", ui.dataOpen ? "true" : "false");
+    flag(box, "hidden", !ui.dataOpen);
+  }
+
   // ---- mount -----------------------------------------------------------------------------
 
   function render(panel, c) {
     leave();
+    // The pane opens on the newest rows again (the window grows only while
+    // it is open), with every row's actions closed.
+    ui.limit = PAGE;
+    ui.actionsFor = null;
     ctx = c;
     watchFields();
     const t = ctx.t;
@@ -614,6 +796,22 @@
         if (k) k.focus();
       })
     ];
+    const dataToggle = el("button", { className: "button hist-data-toggle", text: t("history.data"), attrs: { type: "button", id: "historyDataToggle", "aria-expanded": "false", "aria-controls": "historyData" } });
+    dataToggle.addEventListener("click", () => {
+      ui.dataOpen = !ui.dataOpen;
+      syncData();
+    });
+    const undo = el("div", { className: "hist-undo", attrs: { id: "historyUndo", hidden: true } });
+    // Held open while it has focus or the pointer (WCAG 2.2.1).
+    const hold = (on) => () => {
+      if (!ui.undo) return;
+      ui.undo.held = on;
+      if (!on) armUndoTimer();
+    };
+    undo.addEventListener("focusin", hold(true));
+    undo.addEventListener("focusout", hold(false));
+    undo.addEventListener("pointerenter", hold(true));
+    undo.addEventListener("pointerleave", hold(false));
     const live = el("p", { className: "sr-only", attrs: { id: "historyLive", role: "status", "aria-live": "polite", "aria-atomic": "true" } });
     const root = el("div", { className: "hist", attrs: { id: "historyPanel" } }, [
       el("p", { className: "hint hist-subtitle", text: subtitle, attrs: { id: "historySubtitle" } }),
@@ -621,19 +819,19 @@
       el("label", { className: "sr-only", text: t("history.search"), attrs: { for: "historySearch" } }),
       search,
       chipRow,
-      el("p", { className: "status hist-count", attrs: { id: "historyCount" } }),
-      el("p", { className: "sr-only", text: t("history.restoreHint"), attrs: { id: "historyRestoreHint" } }),
-      el("div", { className: "hist-undo", attrs: { id: "historyUndo", role: "status", hidden: true } }),
-      el("div", { className: "hist-list", attrs: { id: "historyList" } }),
-      more,
-      el("section", { className: "hist-data", attrs: { "aria-labelledby": "historyDataTitle" } }, [
-        el("h3", { className: "hist-group-title", text: t("history.data"), attrs: { id: "historyDataTitle" } }),
+      el("div", { className: "hist-bar" }, [el("p", { className: "status hist-count", attrs: { id: "historyCount" } }), dataToggle]),
+      el("section", { className: "hist-data", attrs: { id: "historyData", "aria-labelledby": "historyDataToggle", hidden: true } }, [
         el("div", { className: "button-row" }, dataButtons),
         fileInput,
         el("div", { className: "hist-box", attrs: { id: "historyImportBox", hidden: true } }),
-        el("div", { className: "hist-box", attrs: { id: "historyClearBox", hidden: true } })
+        el("div", { className: "hist-box", attrs: { id: "historyClearBox", hidden: true } }),
+        el("div", { className: "hist-box", attrs: { id: "historyExportBox", hidden: true } })
       ]),
       el("p", { className: "status", attrs: { id: "historyStatus", role: "status", "aria-live": "polite" } }),
+      el("p", { className: "sr-only", text: t("history.restoreHint"), attrs: { id: "historyRestoreHint" } }),
+      el("div", { className: "hist-list", attrs: { id: "historyList" } }),
+      more,
+      undo,
       live
     ]);
     search.addEventListener("input", () => {
@@ -642,8 +840,18 @@
       renderList();
       mounted.say.soon(() => mounted.panel.querySelector("#historyCount").textContent);
     });
+    // Esc in the search field: a query is cleared first (and the field
+    // keeps the focus); an empty field closes the pane, focus back on its
+    // toggle (the shell's Esc).
+    search.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape" || search.value === "") return;
+      e.preventDefault();
+      e.stopPropagation();
+      search.value = "";
+      search.dispatchEvent(new Event("input", { bubbles: true }));
+    });
     show(panel, [root]);
-    mounted = { panel: root, chips, observer: null, say: ns.announcer.create(live), unsubscribe: ns.historyStore.subscribe(() => {
+    mounted = { panel: root, chips, observer: null, rows: new Map(), say: ns.announcer.create(live), unsubscribe: ns.historyStore.subscribe(() => {
       const active = document.activeElement;
       const li = active && typeof active.closest === "function" ? active.closest("li.hist-row") : null;
       const which = active && typeof active.getAttribute === "function" ? active.getAttribute("data-value") : null;
@@ -652,6 +860,8 @@
       renderUndo();
       if (inList && !root.contains(document.activeElement)) focusRow(li.getAttribute("data-value"), which);
     }) };
+    if (ui.preview || ui.clearing) ui.dataOpen = true;
+    syncData();
     renderList();
     renderUndo();
     renderPreview();

@@ -14,7 +14,9 @@
 //
 // Read-only documents refuse save() with "read_only" until a successful
 // reload ("Retry") or an explicit clear() ("Start fresh", which backs the
-// old value up first; a newer document is never cleared). A save or clear
+// old value up first; a newer document is never cleared, and one that
+// validates again is refused as "recovered" so the caller reloads it
+// instead: a passing read error never wipes a good history). A save or clear
 // of a document this store has not loaded yet loads it first, so nothing
 // unseen (corrupt, newer, too large) is ever overwritten. Backups are "<name>.bak.1" (newest) to ".bak.3",
 // rotated in one transaction; a backup equal to the newest is not repeated.
@@ -357,6 +359,11 @@
             // A newer app replaced it since the last load.
             readOnly.set(name, "newer");
             return { ok: false, code: "read_only" };
+          }
+          if (env && env.ok === "true" && env.result && env.result.status === "ok") {
+            // Valid again (a read error passed, another tab repaired it):
+            // never removed. The caller reloads it, as Retry would.
+            return { ok: false, code: "recovered" };
           }
         }
         try {

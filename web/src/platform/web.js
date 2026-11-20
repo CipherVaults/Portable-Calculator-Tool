@@ -15,6 +15,22 @@
     return err;
   }
 
+  // The share sheet with the export as a file, where the browser can share
+  // files: "shared", "cancelled" (the user closed the sheet) or null (not
+  // possible here).
+  async function shareFile(text, name, type) {
+    try {
+      const nav = window.navigator;
+      if (typeof nav.share !== "function" || typeof nav.canShare !== "function" || typeof File !== "function") return null;
+      const file = new File([String(text)], name, { type });
+      if (!nav.canShare({ files: [file] })) return null;
+      await nav.share({ files: [file], title: name });
+      return "shared";
+    } catch (err) {
+      return err && err.name === "AbortError" ? "cancelled" : null;
+    }
+  }
+
   function base64ToBytes(text) {
     const bin = atob(text.replace(/\s+/g, ""));
     const bytes = new Uint8Array(bin.length);
@@ -58,10 +74,21 @@
     openStore: () => window.PCalc.store.openWebStore((op, req) => engine.call(op, req), window.PCalc.bus),
     persist: () => window.PCalc.store.persist(),
     // A Blob download named Portable-Calculator-<stamp>.<kind> (the
-    // browser's own download folder or share sheet); the History panel
-    // also offers "Copy export to clipboard" (iOS home-screen apps).
+    // browser's own download folder). An iOS home-screen app (which may
+    // ignore a download without a word) offers the file to the share sheet
+    // instead, where the browser can share files. A download is only
+    // started: the browser may still refuse it, so the panel says
+    // "Download started" and also offers "Copy export to clipboard" and, as
+    // the last resort, the text itself.
     exportFile: async (kind, stamp, text) => {
-      const ok = window.PCalc.dom.download(text, "Portable-Calculator-" + stamp + "." + kind, kind === "csv" ? "text/csv" : "application/json");
+      const name = "Portable-Calculator-" + stamp + "." + kind;
+      const type = kind === "csv" ? "text/csv" : "application/json";
+      if (window.navigator.standalone === true) {
+        const shared = await shareFile(text, name, type);
+        if (shared === "shared") return { ok: true, path: null, shared: true };
+        if (shared === "cancelled") return { ok: false, code: "cancelled" };
+      }
+      const ok = window.PCalc.dom.download(text, name, type);
       return ok ? { ok: true, path: null } : { ok: false, code: "export_failed" };
     },
     estimate: () => window.PCalc.store.estimate(),

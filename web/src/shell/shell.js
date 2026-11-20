@@ -205,6 +205,10 @@
         setPane(false, { fromModal: true });
       }
       if (!opts || opts.restoreFocus !== false) {
+        // A field in the closing modal (the history search) hid the phone
+        // bottom bar and so the toggle; it is leaving, so the bar comes
+        // back before the toggle takes the focus.
+        if (typing && container.contains(document.activeElement)) setTyping(false);
         // A rebuilt shell replaced the opener: use the new toggle.
         const back = opener && document.contains(opener) ? opener : name === "drawer" ? nodes.drawerToggle : nodes.paneToggle;
         if (back && typeof back.focus === "function") back.focus();

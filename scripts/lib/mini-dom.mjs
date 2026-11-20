@@ -139,6 +139,15 @@ class Node {
     this.append(node);
     return node;
   }
+  insertBefore(node, ref) {
+    if (!ref) return this.appendChild(node);
+    if (node === ref) return node;
+    if (node.parentNode) node.parentNode.childNodes.splice(node.parentNode.childNodes.indexOf(node), 1);
+    node.parentNode = this;
+    const i = this.childNodes.indexOf(ref);
+    this.childNodes.splice(i < 0 ? this.childNodes.length : i, 0, node);
+    return node;
+  }
   replaceChildren(...nodes) {
     for (const old of this.childNodes) old.parentNode = null;
     this.childNodes = [];
@@ -292,6 +301,11 @@ class Element extends Node {
     if (this.localName === "select") {
       for (const o of this.querySelectorAll("option")) o.selected = o.getAttribute("value") === String(v);
     } else this.setAttribute("value", v);
+  }
+  // A text field's select(): the whole value is selected.
+  select() {
+    this.selectionStart = 0;
+    this.selectionEnd = String(this.value).length;
   }
   closest(selector) {
     for (let n = this; n && n.nodeType === 1; n = n.parentNode) if (matches(n, selector)) return n;
@@ -523,6 +537,10 @@ class FakeTransaction {
     this.pending = 0;
     this.state = "active";
     this.wrote = false;
+    // The keys this transaction wrote: only they reach the database at
+    // commit (a value written meanwhile by a test helper, standing for
+    // another process, is not rolled back by an unrelated commit).
+    this.changes = new Map();
     this.error = null;
     this.oncomplete = null;
     this.onerror = null;
@@ -600,6 +618,7 @@ class FakeTransaction {
           if (factory.quotaExceeded) throw domError("QuotaExceededError", "simulated quota");
           tx.wrote = true;
           tx.staged.set(key, structuredClone(value));
+          tx.changes.set(key, { value: tx.staged.get(key) });
           return key;
         });
       },
@@ -607,6 +626,7 @@ class FakeTransaction {
         write();
         return req(() => {
           tx.staged.delete(key);
+          tx.changes.set(key, null);
           return undefined;
         });
       },
@@ -624,7 +644,12 @@ class FakeTransaction {
       }
       this.state = "done";
       if (this.mode === "readwrite") {
-        this.db.data = this.staged;
+        const next = new Map(this.db.data);
+        for (const [k, c] of this.changes) {
+          if (c) next.set(k, c.value);
+          else next.delete(k);
+        }
+        this.db.data = next;
         this.db.factory.writes++;
       }
       this.release();

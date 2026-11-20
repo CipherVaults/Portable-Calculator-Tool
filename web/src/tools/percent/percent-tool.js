@@ -315,37 +315,49 @@
     return m.t("percent.card." + key);
   }
 
+  // Computes card `key` from its fields as they are NOW and, unless a newer
+  // update started meanwhile, shows it. Returns the history entry of THIS
+  // computation (its own inputs, read before the engine answered) or null,
+  // so Calculate records what it computed even when typing goes on.
   async function update(key) {
-    if (!m) return;
+    if (!m) return null;
     const ticket = ++m.seq[key];
     const spec = CARDS[key];
     const mode = key === "tax" ? model.taxMode : null;
     const nums = spec.fields.map(([id]) => readNumber(id));
+    const inputs = {};
+    ["inputA", "inputB", "inputC"].forEach((name, i) => {
+      if (spec.fields[i]) inputs[name] = sanitize(raw(spec.fields[i][0]));
+    });
+    if (mode) inputs.mode = mode;
     m.last[key] = null;
     syncPresets(key);
-    if (nums.some((n) => n === null)) return cardIdle(key);
-    if (!nums.every(Number.isFinite)) return cardOutOfRange(key);
+    if (nums.some((n) => n === null)) {
+      cardIdle(key);
+      return null;
+    }
+    if (!nums.every(Number.isFinite)) {
+      cardOutOfRange(key);
+      return null;
+    }
     const req = {};
     spec.fields.forEach(([, name], i) => {
       req[name] = nums[i];
     });
     if (mode) req.mode = mode;
     const res = await envelope(spec.op, req);
-    if (!m || ticket !== m.seq[key]) return;
-    if (!res) return cardOutOfRange(key);
-    if (res.ok === "false") return cardError(key, res.error);
-    const r = res.ok === "true" ? res.result : null;
-    if (!allFinite(r, spec)) return cardOutOfRange(key);
+    if (!m) return null;
+    const current = ticket === m.seq[key];
+    const r = res && res.ok === "true" ? res.result : null;
+    if (!res || res.ok !== "true" || !allFinite(r, spec)) {
+      if (current) {
+        if (res && res.ok === "false") cardError(key, res.error);
+        else cardOutOfRange(key);
+      }
+      return null;
+    }
     const view = VIEW[key](r, nums, mode);
-    setFormula(key, view.formula);
-    live(key, m.t("percent.live.value", { value: lineText(view.live) }));
-    setResult(key, view.result);
-    const inputs = {};
-    ["inputA", "inputB", "inputC"].forEach((name, i) => {
-      if (spec.fields[i]) inputs[name] = sanitize(raw(spec.fields[i][0]));
-    });
-    if (mode) inputs.mode = mode;
-    m.last[key] = {
+    const entry = {
       calculator: key,
       calculatorLabel: historyLabel(key, mode),
       inputs,
@@ -353,18 +365,29 @@
       resultText: view.resultText,
       copyText: view.copyText
     };
+    if (!current) return entry;
+    setFormula(key, view.formula);
+    live(key, m.t("percent.live.value", { value: lineText(view.live) }));
+    setResult(key, view.result);
+    m.last[key] = entry;
+    return entry;
+  }
+
+  function recordEntry(entry) {
+    if (!entry || !entry.copyText) return false;
+    return ns.history.record(Object.assign({ tool: "percent" }, entry));
   }
 
   function record(key) {
-    const last = m && m.last[key];
-    if (!last || !last.copyText) return false;
-    return ns.history.record(Object.assign({ tool: "percent" }, last));
+    return recordEntry(m && m.last[key]);
   }
 
+  // Calculate / Enter: records the calculation this click computed (not a
+  // newer one typed while the engine was answering).
   async function calculateAndRecord(key) {
-    await update(key);
+    const entry = await update(key);
     if (!m) return;
-    record(key);
+    recordEntry(entry);
     m.say.now(() => speech(key));
   }
   const speech = (key) => ns.announcer.resultWords(byId(key + "Result"));
@@ -482,7 +505,7 @@
   // and B5c accepts both digit systems everywhere (sanitize() normalises
   // them). Numbers stay left-to-right in a right-to-left page (dir="ltr").
   function numberInput(id, example) {
-    const attrs = { id, type: "text", inputmode: id === "tipPeople" ? "numeric" : "decimal", dir: "ltr", autocomplete: "off", spellcheck: "false", enterkeyhint: "done" };
+    const attrs = { id, type: "text", inputmode: id === "tipPeople" ? "numeric" : "decimal", dir: "ltr", autocomplete: "off", spellcheck: "false", enterkeyhint: "done", maxlength: "64" };
     if (id !== "tipPeople") attrs.placeholder = m.t("percent.example", { value: example });
     return el("input", { className: "input", attrs });
   }

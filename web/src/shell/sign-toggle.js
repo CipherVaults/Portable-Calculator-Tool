@@ -29,7 +29,23 @@
     button.addEventListener("pointerdown", keep);
     button.addEventListener("mousedown", keep);
     button.addEventListener("click", () => {
-      input.value = flip(input.value);
+      const focused = document.activeElement === input;
+      const before = input.value;
+      const at = focused && typeof input.selectionStart === "number" ? input.selectionStart : null;
+      const end = focused && typeof input.selectionEnd === "number" ? input.selectionEnd : null;
+      input.value = flip(before);
+      // The caret stays by the same digit: moved by the sign added or
+      // removed in front of it (the leading text the flip trims is gone).
+      if (at !== null && end !== null && typeof input.setSelectionRange === "function") {
+        const shift = input.value.length - before.length;
+        const max = input.value.length;
+        const place = (p) => Math.min(max, Math.max(0, p + shift));
+        try {
+          input.setSelectionRange(place(at), place(end));
+        } catch (_) {
+          // A field type without a selection: the caret is the browser's.
+        }
+      }
       input.dispatchEvent(new Event("input", { bubbles: true }));
     });
     return el("div", { className: "signed-row" }, [input, button]);

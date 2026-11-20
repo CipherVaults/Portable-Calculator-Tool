@@ -773,10 +773,16 @@
     return ns.history.record(Object.assign({ tool: "date", calculatorLabel: m.t("date.card." + key) }, last));
   }
 
+  // Calculate / Enter: records only the calculation this click computed.
+  // Each updater takes its ticket before its first await, so a newer update
+  // (typing while the engine answers) shows here as a moved ticket; then
+  // m.last holds another calculation and nothing is recorded for the click.
   async function calculateAndRecord(key) {
-    await UPDATERS[key]();
+    const run = UPDATERS[key]();
+    const mine = m ? m.seq[key] : null;
+    await run;
     if (!m) return;
-    record(key);
+    if (m.seq[key] === mine) record(key);
     m.say.now(() => speech(key));
   }
 

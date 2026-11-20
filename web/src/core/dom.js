@@ -10,7 +10,7 @@
     "aria-describedby", "aria-expanded", "aria-controls", "aria-current",
     "aria-pressed", "aria-selected", "aria-orientation", "aria-disabled", "aria-atomic",
     "aria-invalid", "min", "max", "step", "maxlength", "placeholder", "inputmode",
-    "autocomplete", "spellcheck", "enterkeyhint", "accept",
+    "autocomplete", "spellcheck", "enterkeyhint", "accept", "readonly",
     "data-check", "data-state", "data-route", "data-tab", "data-doc", "data-value",
     "data-card", "data-date", "data-focus-key"
   ]);

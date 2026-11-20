@@ -623,18 +623,27 @@ export function dateBTests(web, engine) {
       const region = app.byId("dateResultLive");
       const boxes = KEYS.every((k) => !app.byId(k + "Result").hasAttribute("role") && !app.byId(k + "Result").hasAttribute("aria-live"));
       const mount = attr(region, "aria-live") === "polite" && region.textContent === "";
+      // Count every write to the region (not only what it says at the end),
+      // so a second, stale timer is caught however slow the run is.
+      let writes = 0;
+      let proto = Object.getPrototypeOf(region);
+      let desc = null;
+      while (proto && !(desc = Object.getOwnPropertyDescriptor(proto, "textContent"))) proto = Object.getPrototypeOf(proto);
+      Object.defineProperty(region, "textContent", { configurable: true, get() { return desc.get.call(this); }, set(v) { writes++; desc.set.call(this, v); } });
       input(app, "betweenStart", "2024-01-01");
       input(app, "betweenEnd", "2024-12-30");
       await until(() => app.byId("betweenLive").textContent === "→ 364 days", 2000);
       input(app, "betweenEnd", "2024-12-31");
+      const typedAt = Date.now();
       await until(() => app.byId("betweenLive").textContent === "→ 365 days", 2000);
       const whileTyping = region.textContent === "";
       await until(() => region.textContent !== "", 2000);
       const words = app.PCalc.announcer.resultWords(app.byId("betweenResult"));
       const first = region.textContent === words && words.includes("365 days");
-      // Spoken once: no second (stale) timer speaks again later.
-      await tick(900);
-      const paused = first && region.textContent === words;
+      // Spoken once: no second (stale) timer speaks again later. Wait out
+      // every pause timer a keystroke could have started.
+      await tick(Math.max(900, typedAt + app.PCalc.announcer.PAUSE_MS + 400 - Date.now()));
+      const paused = first && region.textContent === words && writes === 1;
       app.byId("betweenEnd").focus();
       app.document.press("Enter");
       await until(() => region.textContent !== words, 400);
@@ -1015,10 +1024,10 @@ export const DATE_MUTANTS = [
   ["B", "date-settings-calendar", "src/tools/date/date-settings.js", '        if (v === "eg") next.weekend = WEEKENDS.friSat.slice();\n', ""],
   ["B", "date-settings-calendar", "src/tools/date/date-settings.js", "if (picked.length === 7) {", "if (false) {"],
   ["B", "date-settings-calendar", "src/tools/date/date-settings.js", 'flag(byId("hijriPlusBtn"), "disabled", offset >= HIJRI_OFFSET_MAX);', "void offset;"],
-  ["B", "date-history-hook", "src/tools/date/date-tool.js", "    if (!m) return;\n    record(key);\n", "    if (!m) return;\n"],
+  ["B", "date-history-hook", "src/tools/date/date-tool.js", "    if (m.seq[key] === mine) record(key);\n", ""],
   ["B", "date-results-spoken-once", "src/tools/date/date-tool.js", 'attrs: { id: key + "Result" } }', 'attrs: { id: key + "Result", role: "status", "aria-live": "polite" } }'],
   ["B", "date-results-spoken-once", "src/tools/date/date-tool.js", 'on(id, ["input"], () => m.say.soon(() => speech(key)));', 'on(id, ["input"], () => m.say.now(() => speech(key)));'],
-  ["B", "date-results-spoken-once", "src/tools/date/date-tool.js", "    record(key);\n    m.say.now(() => speech(key));\n", "    record(key);\n"],
+  ["B", "date-results-spoken-once", "src/tools/date/date-tool.js", "    if (m.seq[key] === mine) record(key);\n    m.say.now(() => speech(key));\n", "    if (m.seq[key] === mine) record(key);\n"],
   ["B", "date-results-spoken-once", "src/shell/announcer.js", "    function soon(read) {\n      cancel();", "    function soon(read) {"],
   ["B", "date-ltr-isolation", "src/tools/date/date-tool.js", 'el("span", { className: "result-main" }, ltrNodes(main))', 'el("span", { className: "result-main", text: main })'],
   ["B", "date-ltr-isolation", "src/tools/date/date-tool.js", "const subs = [eng(r.expressionText), ", "const subs = [str(r.expressionText), "],
