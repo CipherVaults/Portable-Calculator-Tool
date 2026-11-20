@@ -34,7 +34,12 @@
 //! one the caller read, so two windows recording at once never overwrite
 //! each other (the loser gets `conflict`, reads again and re-applies its
 //! operation). Saves, compare-and-saves and clears are serialised by one
-//! write lock.
+//! write lock in the process and, for a store in a directory, by an
+//! exclusive lock on `docs.lock` across processes (two desktop instances
+//! started side by side never write over each other's history entries).
+//! [`DocStore::clear`] removes only a document that is not valid now: one
+//! that validates again is refused as `recovered`, so "Start fresh" after a
+//! passing read error never wipes a good history.
 //!
 //! [`DocStore::memory`] keeps everything in memory (the `--smoke-test` run
 //! never touches the real app data).
@@ -48,6 +53,14 @@ use pcalc_api::store::{check, Checked, Doc};
 use serde::Serialize;
 
 use crate::fs::{read_regular_file_limited, write_atomic_private};
+
+/// The cross-process lock file in a store directory.
+pub const LOCK_FILE: &str = "docs.lock";
+
+/// Holds the cross-process store lock (released when dropped: the handle
+/// closes). `None` for the memory store, or when the file system offers no
+/// lock (the in-process write lock still applies).
+struct DirLock(#[allow(dead_code)] Option<std::fs::File>);
 
 /// Backups kept per document.
 pub const BACKUPS_KEPT: usize = 3;
@@ -121,6 +134,10 @@ pub enum StoreError {
     WriteFailed,
     /// [`DocStore::save_if`]: the stored document changed since it was read.
     Conflict,
+    /// [`DocStore::clear`]: the stored document is valid again (a read
+    /// error passed, another window repaired it), so nothing is removed;
+    /// the caller reloads it ("Retry") instead.
+    Recovered,
 }
 
 impl StoreError {
@@ -133,6 +150,7 @@ impl StoreError {
             StoreError::TooLarge => "too_large",
             StoreError::WriteFailed => "write_failed",
             StoreError::Conflict => "conflict",
+            StoreError::Recovered => "recovered",
         }
     }
 }
@@ -251,6 +269,35 @@ impl DocStore {
     fn with_clock(mut self, clock: fn() -> u64) -> Self {
         self.clock = clock;
         self
+    }
+
+    /// Takes the cross-process lock of a store directory (blocking until
+    /// another process releases it).
+    fn dir_lock(&self) -> DirLock {
+        let Backend::Dir(dir) = &self.backend else {
+            return DirLock(None);
+        };
+        if crate::fs::ensure_private_parent_dir(dir).is_err() {
+            return DirLock(None);
+        }
+        let path = dir.join(LOCK_FILE);
+        // Never follow a symlink planted in place of the lock file.
+        if std::fs::symlink_metadata(&path).is_ok_and(|m| !m.file_type().is_file()) {
+            return DirLock(None);
+        }
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+        {
+            Ok(file) => match file.lock() {
+                Ok(()) => DirLock(Some(file)),
+                Err(_) => DirLock(None),
+            },
+            Err(_) => DirLock(None),
+        }
     }
 
     fn file_name(doc: Doc) -> String {
@@ -372,6 +419,7 @@ impl DocStore {
     /// file is backed up and protected, never overwritten unseen).
     pub fn save(&self, doc: Doc, text: &str) -> Result<String, StoreError> {
         let _writing = self.writes.lock().map_err(|_| StoreError::WriteFailed)?;
+        let _other_processes = self.dir_lock();
         self.save_locked(doc, text)
     }
 
@@ -388,6 +436,7 @@ impl DocStore {
         text: &str,
     ) -> Result<String, StoreError> {
         let _writing = self.writes.lock().map_err(|_| StoreError::WriteFailed)?;
+        let _other_processes = self.dir_lock();
         if !self.was_loaded(doc) {
             self.load(doc);
         }
@@ -437,10 +486,13 @@ impl DocStore {
     /// "Start fresh": backs the current file up (or moves an unreadable
     /// one aside whole), removes it, and makes `doc` writable and empty.
     /// Refused with `read_only` for a document written by a newer app (B10:
-    /// never written, never backed up); a document not loaded yet is loaded
-    /// first to find that out.
+    /// never written, never backed up), and with `recovered` for one that
+    /// validates now (it stays as it is and becomes writable, as a "Retry"
+    /// would make it); a document not loaded yet is loaded first to find
+    /// that out.
     pub fn clear(&self, doc: Doc) -> Result<Option<String>, StoreError> {
         let _writing = self.writes.lock().map_err(|_| StoreError::WriteFailed)?;
+        let _other_processes = self.dir_lock();
         if !self.was_loaded(doc) {
             self.load(doc);
         }
@@ -450,10 +502,18 @@ impl DocStore {
         let backup = match self.read_raw(doc) {
             Raw::Missing => None,
             Raw::Bytes(bytes) => {
-                if let Checked::Newer(_) = check(doc, &bytes) {
-                    // A newer app replaced it since the last load.
-                    self.set_read_only(doc, Some(Status::Newer));
-                    return Err(StoreError::ReadOnly);
+                match check(doc, &bytes) {
+                    Checked::Newer(_) => {
+                        // A newer app replaced it since the last load.
+                        self.set_read_only(doc, Some(Status::Newer));
+                        return Err(StoreError::ReadOnly);
+                    }
+                    Checked::Current(_) => {
+                        // Valid again: never removed.
+                        self.set_read_only(doc, None);
+                        return Err(StoreError::Recovered);
+                    }
+                    Checked::TooLarge | Checked::Invalid(_) => {}
                 }
                 let backup = self.backup(doc, &bytes);
                 // Never remove data that is not safely in a backup: the file
@@ -910,12 +970,16 @@ mod tests {
             store
                 .save(Doc::Countdowns, r#"{"schemaVersion":1,"items":[]}"#)
                 .unwrap();
-            // Clearing valid data backs it up first.
-            let backup = store.clear(Doc::Countdowns).unwrap().unwrap();
-            assert_eq!(
-                store.read_backup(&backup).unwrap(),
-                br#"{"schemaVersion":1,"items":[]}"#
-            );
+            // Valid data is never cleared: "recovered", untouched, writable.
+            assert_eq!(store.clear(Doc::Countdowns), Err(StoreError::Recovered));
+            assert!(!store.is_read_only(Doc::Countdowns));
+            assert_eq!(store.load(Doc::Countdowns).status, Status::Ok);
+            assert_eq!(store.backups(Doc::Countdowns).len(), 1);
+            // Damaged again: the load backs it up, then clear removes it.
+            store.put_raw(Doc::Countdowns, b"[still corrupt]").unwrap();
+            assert!(store.load(Doc::Countdowns).read_only);
+            assert_eq!(store.clear(Doc::Countdowns), Ok(None));
+            assert_eq!(store.backups(Doc::Countdowns).len(), 2);
             assert_eq!(
                 store.clear(Doc::Countdowns),
                 Ok(None),
@@ -1113,6 +1177,66 @@ mod tests {
             30,
             "conflicts {conflicts}"
         );
+    }
+
+    #[test]
+    fn another_process_holding_the_store_lock_blocks_every_write() {
+        // A second desktop instance is a second DocStore on the same folder
+        // (its own in-process lock): writes wait for the folder's docs.lock,
+        // so the compare and the write of save_if are one step across
+        // processes too.
+        let temp = TestTempDir::new("pcalc-docs-xproc");
+        let dir = temp.path().join("app");
+        let first = DocStore::in_dir(&dir);
+        first.save(Doc::History, &history_with("h-1-1")).unwrap();
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(dir.join(LOCK_FILE))
+            .unwrap();
+        held.lock().unwrap();
+        let second = std::sync::Arc::new(DocStore::in_dir(&dir));
+        let expected = second.load(Doc::History).doc;
+        let writer = {
+            let second = second.clone();
+            std::thread::spawn(move || {
+                second.save_if(Doc::History, expected.as_deref(), &history_with("h-2-2"))
+            })
+        };
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(
+            !writer.is_finished(),
+            "wrote while another process held the lock"
+        );
+        assert!(first.load(Doc::History).doc.unwrap().contains("h-1-1"));
+        held.unlock().unwrap();
+        assert!(writer.join().unwrap().is_ok());
+        assert!(first.load(Doc::History).doc.unwrap().contains("h-2-2"));
+        // A symlink in place of the lock file is never followed or locked.
+        let _ = std::fs::remove_file(dir.join(LOCK_FILE));
+        let target = temp.path().join("not-a-lock");
+        std::fs::write(&target, b"x").unwrap();
+        if try_symlink_file(&target, &dir.join(LOCK_FILE)).is_some() {
+            assert!(first.save(Doc::History, &history_with("h-3-3")).is_ok());
+            assert_eq!(std::fs::read(&target).unwrap(), b"x");
+        }
+    }
+
+    #[test]
+    fn a_history_that_validates_again_is_never_cleared() {
+        // "Start a new history" pressed after a passing read error: the
+        // stored history is valid now, so it is kept and becomes writable.
+        let temp = TestTempDir::new("pcalc-docs-recovered");
+        for store in stores(&temp) {
+            store.put_raw(Doc::History, b"{not json").unwrap();
+            assert!(store.load(Doc::History).read_only);
+            let good = history_with("h-7-7");
+            store.put_raw(Doc::History, good.as_bytes()).unwrap();
+            assert_eq!(store.clear(Doc::History), Err(StoreError::Recovered));
+            let after = store.load(Doc::History);
+            assert_eq!(after.status, Status::Ok);
+            assert!(after.doc.unwrap().contains("h-7-7"));
+        }
     }
 
     #[test]

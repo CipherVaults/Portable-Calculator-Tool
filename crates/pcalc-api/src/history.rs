@@ -19,7 +19,9 @@
 //! - texts: `calculatorLabel`, `inputsText`, `resultText` one line,
 //!   1..=1,024 characters, not blank; `expressionText` one line, 0..=1,024;
 //!   `copyText` 1..=4,096 (line feeds and tabs allowed); `note` `null` or
-//!   one line of 1..=200; `engine` 1..=64 of `[A-Za-z0-9 ._+-]`.
+//!   one line of 1..=200; `engine` 1..=64 of `[A-Za-z0-9 ._+-]`. No text
+//!   holds a bidi mark, embedding, override or isolate, U+2028/U+2029 or
+//!   U+FEFF.
 //!
 //! Inputs are written in a fixed key order (not a JSON map), so the
 //! canonical text is the same whatever map implementation a build uses.
@@ -27,13 +29,17 @@
 //! # Ops
 //!
 //! - `history.apply` `{doc: <history>|null, ops: [...]}`: applies `add`,
-//!   `import`, `delete`, `pin` and `note` to the stored document as it is
-//!   now (the stores read it inside their write lock), then sorts newest
-//!   first, evicts the oldest unpinned entries beyond 2,000 and beyond the
-//!   4 MiB write cap (pinned entries are never evicted) and answers the new
-//!   canonical document with counts. `add` is idempotent by id and merges
-//!   with the newest entry when it is the same calculation (tool,
-//!   calculator, inputs and result): only the time moves.
+//!   `import`, `delete`, `clear` (`{keepPinned}`), `pin` and `note` to the
+//!   stored document as it is now (the stores read it inside their write
+//!   lock), then sorts newest first, evicts the oldest unpinned entries
+//!   beyond 2,000 and beyond the 4 MiB write cap (pinned entries are never
+//!   evicted) and answers the new canonical document with counts and, per
+//!   operation, the ids it missed and the entries it removed. `add` is
+//!   idempotent by id and merges with the newest entry when it is the same
+//!   calculation (tool, calculator, inputs and result): only the time
+//!   moves. An operation that would put the pinned entries alone over the
+//!   4 MiB cap is refused at its own index (`ops[i]`). `import` counts
+//!   near-duplicates (the same calculation within 1 s under another id).
 //! - `history.import_preview`: the raw text of an export file (or of a bare
 //!   history document), at most 8 MiB. Each entry is checked on its own:
 //!   the valid ones come back canonical, the rest are counted as rejected
@@ -166,8 +172,28 @@ fn entry_id(v: &Value, path: &str) -> Result<String, DocError> {
     }
 }
 
-/// One line of text: at most `max` characters, no control characters,
-/// and (unless `allow_empty`) not blank.
+/// Bidi marks, embeddings, overrides and isolates, line and paragraph
+/// separators and the byte order mark: refused in every history text (as
+/// date-core refuses them in holiday names), so a crafted import cannot
+/// make a row show a value other than the one stored, used or exported (an
+/// RLO before "00.001" shows "100.00"). Real right-to-left text needs none
+/// of them: rows render with dir=auto.
+fn is_hidden_format_char(c: char) -> bool {
+    matches!(c,
+        '\u{200E}'
+        | '\u{200F}'
+        | '\u{202A}'..='\u{202E}'
+        | '\u{2066}'..='\u{2069}'
+        | '\u{2028}'
+        | '\u{2029}'
+        | '\u{FEFF}')
+}
+
+const HIDDEN_FORMAT: &str = "No bidi control, separator or byte order mark characters.";
+
+/// One line of text: at most `max` characters, no control characters, no
+/// hidden bidi or separator characters, and (unless `allow_empty`) not
+/// blank.
 fn line(v: &Value, path: &str, max: usize, allow_empty: bool) -> Result<String, DocError> {
     let Some(s) = v.as_str() else {
         return Err(DocError::at(path, "Expected text."));
@@ -177,6 +203,9 @@ fn line(v: &Value, path: &str, max: usize, allow_empty: bool) -> Result<String, 
     }
     if s.chars().any(char::is_control) {
         return Err(DocError::at(path, "One line without control characters."));
+    }
+    if s.chars().any(is_hidden_format_char) {
+        return Err(DocError::at(path, HIDDEN_FORMAT));
     }
     if !allow_empty && s.trim().is_empty() {
         return Err(DocError::at(path, "Must not be empty."));
@@ -200,6 +229,9 @@ fn multiline(v: &Value, path: &str) -> Result<String, DocError> {
             path,
             "No control characters but line feeds and tabs.",
         ));
+    }
+    if s.chars().any(is_hidden_format_char) {
+        return Err(DocError::at(path, HIDDEN_FORMAT));
     }
     if s.trim().is_empty() {
         return Err(DocError::at(path, "Must not be empty."));
@@ -500,6 +532,51 @@ struct Applied {
     missing: usize,
     evicted: usize,
     pin_limit: bool,
+    /// Imported entries that look like one already there: the same
+    /// calculation (tool, calculator, inputs, result) within 1 s under
+    /// another id. They are imported all the same (B10) and only counted.
+    near_duplicates: usize,
+    /// Per operation, in order: the ids it did not find and the entries it
+    /// removed, as they were in the stored document at write time (the
+    /// web's Undo puts exactly these back, notes and pins included).
+    op_results: Vec<OpResult>,
+}
+
+/// What one operation of a `history.apply` did.
+#[derive(Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct OpResult {
+    missing: usize,
+    removed: Vec<Entry>,
+}
+
+/// The near-duplicate window (B10: timestamps within 1 s).
+const NEAR_DUPLICATE_MS: u64 = 1000;
+
+/// The text that identifies a calculation (the near-duplicate check).
+fn calculation_key(e: &Entry) -> String {
+    let inputs = serde_json::to_string(&e.inputs).unwrap_or_default();
+    format!(
+        "{}\u{0}{}\u{0}{inputs}\u{0}{}",
+        e.tool, e.calculator, e.result_text
+    )
+}
+
+/// The size of the canonical document holding only the pinned entries:
+/// pinned entries are never evicted, so this must stay within the 4 MiB
+/// write cap whatever else happens.
+fn pinned_size(entries: &[Entry]) -> usize {
+    // {"schemaVersion":1,"entries":[]}
+    let mut size = 32usize;
+    let mut n = 0usize;
+    for e in entries.iter().filter(|e| e.pinned) {
+        let len = serde_json::to_string(e)
+            .map(|s| s.len())
+            .unwrap_or(usize::MAX);
+        size = size.saturating_add(len);
+        n += 1;
+    }
+    size.saturating_add(n.saturating_sub(1))
 }
 
 /// The document's entries with a fast id lookup.
@@ -622,6 +699,8 @@ fn apply_value(req: &Value) -> Result<Applied, DocError> {
         missing: 0,
         evicted: 0,
         pin_limit: false,
+        near_duplicates: 0,
+        op_results: Vec::with_capacity(ops.len()),
     };
     for (i, op) in ops.iter().enumerate() {
         let at = format!("{ops_path}[{i}]");
@@ -635,11 +714,16 @@ fn apply_value(req: &Value) -> Result<Applied, DocError> {
             return Err(DocError::at(&at, "Expected exactly one operation."));
         };
         let path = join(&at, name);
+        let mut result = OpResult::default();
+        // Whether this operation may have grown the pinned entries (which
+        // are never evicted, so they alone must fit the write cap).
+        let mut pinned_grew = false;
         match name.as_str() {
             "add" => {
                 let e = entry(body, &path)?;
                 if w.ids.contains(&e.id) {
                     out.duplicates += 1;
+                    out.op_results.push(result);
                     continue;
                 }
                 // The newest entry (the first of the newest timestamp).
@@ -659,6 +743,7 @@ fn apply_value(req: &Value) -> Result<Applied, DocError> {
                         e.pinned = false;
                         out.pin_limit = true;
                     }
+                    pinned_grew = e.pinned;
                     w.pinned += usize::from(e.pinned);
                     w.ids.insert(e.id.clone());
                     w.entries.push(e);
@@ -672,16 +757,37 @@ fn apply_value(req: &Value) -> Result<Applied, DocError> {
                 if items.len() > IMPORT_MAX_ENTRIES {
                     return Err(DocError::at(&path, "Too many entries."));
                 }
+                // The calculations already here, with their times (only
+                // built when the import brings a new entry).
+                let mut known: Option<std::collections::HashMap<String, Vec<u64>>> = None;
                 for (j, item) in items.iter().enumerate() {
                     let mut e = entry(item, &format!("{path}[{j}]"))?;
                     if w.ids.contains(&e.id) {
                         out.duplicates += 1;
                         continue;
                     }
+                    let index = known.get_or_insert_with(|| {
+                        let mut m: std::collections::HashMap<String, Vec<u64>> =
+                            std::collections::HashMap::new();
+                        for x in &w.entries {
+                            m.entry(calculation_key(x))
+                                .or_default()
+                                .push(x.timestamp_ms);
+                        }
+                        m
+                    });
+                    if index.get(&calculation_key(&e)).is_some_and(|times| {
+                        times
+                            .iter()
+                            .any(|t| t.abs_diff(e.timestamp_ms) <= NEAR_DUPLICATE_MS)
+                    }) {
+                        out.near_duplicates += 1;
+                    }
                     if e.pinned && w.pinned >= HISTORY_MAX_PINNED {
                         e.pinned = false;
                         out.pin_limit = true;
                     }
+                    pinned_grew |= e.pinned;
                     w.pinned += usize::from(e.pinned);
                     w.ids.insert(e.id.clone());
                     w.entries.push(e);
@@ -694,11 +800,28 @@ fn apply_value(req: &Value) -> Result<Applied, DocError> {
                         if let Some(pos) = w.entries.iter().position(|e| e.id == id) {
                             let gone = w.entries.remove(pos);
                             w.pinned -= usize::from(gone.pinned);
+                            result.removed.push(gone);
                         }
                     } else {
-                        out.missing += 1;
+                        result.missing += 1;
                     }
                 }
+            }
+            "clear" => {
+                // Every entry, or every unpinned one: decided on the stored
+                // document at write time (and again on a retry after a
+                // conflict), so an entry another window pinned meanwhile is
+                // kept.
+                let mut b = object(body, &path)?;
+                let keep_pinned = b.boolean("keepPinned")?;
+                b.finish()?;
+                let (gone, kept): (Vec<Entry>, Vec<Entry>) = std::mem::take(&mut w.entries)
+                    .into_iter()
+                    .partition(|e| !(keep_pinned && e.pinned));
+                w.entries = kept;
+                w.ids = w.entries.iter().map(|e| e.id.clone()).collect();
+                w.pinned = w.entries.iter().filter(|e| e.pinned).count();
+                result.removed = gone;
             }
             "pin" => {
                 let mut b = object(body, &path)?;
@@ -708,13 +831,14 @@ fn apply_value(req: &Value) -> Result<Applied, DocError> {
                 b.finish()?;
                 let full = w.pinned >= HISTORY_MAX_PINNED;
                 match w.find(&id) {
-                    None => out.missing += 1,
+                    None => result.missing += 1,
                     Some(e) if e.pinned == pinned => {}
                     Some(_) if pinned && full => out.pin_limit = true,
                     Some(e) => {
                         e.pinned = pinned;
                         if pinned {
                             w.pinned += 1;
+                            pinned_grew = true;
                         } else {
                             w.pinned -= 1;
                         }
@@ -729,17 +853,31 @@ fn apply_value(req: &Value) -> Result<Applied, DocError> {
                 let text = note(v, &p)?;
                 b.finish()?;
                 match w.find(&id) {
-                    None => out.missing += 1,
-                    Some(e) => e.note = text,
+                    None => result.missing += 1,
+                    Some(e) => {
+                        pinned_grew = e.pinned;
+                        e.note = text;
+                    }
                 }
             }
             _ => {
                 return Err(DocError::at(
                     &path,
-                    "Expected add, import, delete, pin or note.",
+                    "Expected add, import, delete, clear, pin or note.",
                 ))
             }
         }
+        // The operation that would put the pinned entries alone over the
+        // cap is refused by its own index, so the caller drops only it and
+        // every other operation is still written (no head-of-line block).
+        if pinned_grew && pinned_size(&w.entries) > HISTORY_WRITE_CAP {
+            return Err(DocError::at(
+                &at,
+                "The pinned entries would be over the 4 MiB history cap.",
+            ));
+        }
+        out.missing += result.missing;
+        out.op_results.push(result);
     }
     out.evicted = fit(&mut w)?;
     out.doc.entries = w.entries;
@@ -1629,6 +1767,239 @@ mod tests {
         assert_eq!(kept.len() + r["evicted"].as_u64().unwrap() as usize, 2000);
         // At the cap the document is still a valid stored history.
         assert!(call("history.validate", &text).starts_with(r#"{"ok":"true""#));
+    }
+
+    #[test]
+    fn hidden_bidi_and_separator_characters_are_refused_in_every_text() {
+        for c in [
+            '\u{200E}', '\u{200F}', '\u{202A}', '\u{202B}', '\u{202C}', '\u{202D}', '\u{202E}',
+            '\u{2066}', '\u{2067}', '\u{2068}', '\u{2069}', '\u{2028}', '\u{2029}', '\u{FEFF}',
+        ] {
+            for key in [
+                "calculatorLabel",
+                "inputsText",
+                "resultText",
+                "expressionText",
+                "copyText",
+                "note",
+            ] {
+                let mut e = date_entry("h-1-0", 1, "2026-11-19");
+                e[key] = json!(format!("{c}00.001% increase"));
+                assert_eq!(
+                    field_of(&validate_doc(&doc(vec![e]))),
+                    format!("entries[0].{key}"),
+                    "{key} U+{:04X}",
+                    c as u32
+                );
+            }
+        }
+        // Real right-to-left text (Arabic letters, Arabic-Indic digits) is fine.
+        let mut e = date_entry("h-1-0", 1, "2026-11-19");
+        e["note"] = json!("ميزانية ٣٦٥");
+        e["resultText"] = json!("٣٦٥ يوم");
+        assert!(validate_doc(&doc(vec![e])).starts_with(r#"{"ok":"true""#));
+        // A crafted import: the entry is rejected on its own.
+        let mut bad = date_entry("h-2-0", 2, "2026-11-19");
+        bad["resultText"] = json!("\u{202E}00.001% increase");
+        let p = ok(&call(
+            "history.import_preview",
+            &export_file(vec![bad, date_entry("h-3-0", 3, "2026-11-19")]).to_string(),
+        ));
+        assert_eq!(
+            (
+                p["rejected"].as_u64(),
+                p["entries"].as_array().unwrap().len()
+            ),
+            (Some(1), 1)
+        );
+    }
+
+    #[test]
+    fn clear_decides_pinned_at_write_time_and_reports_what_it_removed() {
+        let mut pinned = date_entry("h-2-0", 2, "2026-01-02");
+        pinned["pinned"] = json!(true);
+        pinned["note"] = json!("keep me");
+        let base = doc(vec![
+            date_entry("h-1-0", 1, "2026-01-01"),
+            pinned.clone(),
+            date_entry("h-3-0", 3, "2026-01-03"),
+        ]);
+        // Another window pinned h-3-0 since this one read: keepPinned keeps it.
+        let now = apply(
+            base.clone(),
+            json!([{"pin": {"id": "h-3-0", "pinned": true}}]),
+        )["doc"]
+            .clone();
+        let r = apply(now, json!([{"clear": {"keepPinned": true}}]));
+        let left: Vec<&str> = r["doc"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(left, ["h-3-0", "h-2-0"]);
+        let removed = r["opResults"][0]["removed"].as_array().unwrap();
+        assert_eq!(
+            (removed.len(), removed[0]["id"].as_str()),
+            (1, Some("h-1-0"))
+        );
+        // keepPinned false removes everything; the removed entries come back
+        // whole (pins and notes), so Undo restores exactly them.
+        let all = apply(base.clone(), json!([{"clear": {"keepPinned": false}}]));
+        assert_eq!(all["doc"]["entries"].as_array().unwrap().len(), 0);
+        let gone = all["opResults"][0]["removed"].clone();
+        assert_eq!(gone.as_array().unwrap().len(), 3);
+        let back = apply(all["doc"].clone(), json!([{"import": gone}]));
+        assert_eq!(back["doc"], apply(base.clone(), json!([]))["doc"]);
+        // Per-op results line up with the ops; delete reports its misses.
+        let r = apply(
+            base.clone(),
+            json!([
+                {"add": date_entry("h-9-0", 9, "2026-02-01")},
+                {"delete": ["h-1-0", "h-8-8"]},
+                {"note": {"id": "h-7-7", "note": "x"}},
+                {"clear": {"keepPinned": true}}
+            ]),
+        );
+        let res = r["opResults"].as_array().unwrap();
+        assert_eq!(res.len(), 4);
+        assert_eq!(
+            (
+                res[0]["missing"].as_u64(),
+                res[0]["removed"].as_array().unwrap().len()
+            ),
+            (Some(0), 0)
+        );
+        assert_eq!(
+            (
+                res[1]["missing"].as_u64(),
+                res[1]["removed"][0]["id"].as_str()
+            ),
+            (Some(1), Some("h-1-0"))
+        );
+        assert_eq!(res[2]["missing"], 1);
+        assert_eq!(r["missing"], 2);
+        let mut cleared: Vec<&str> = res[3]["removed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["id"].as_str().unwrap())
+            .collect();
+        cleared.sort_unstable();
+        assert_eq!(cleared, ["h-3-0", "h-9-0"]);
+        // Strict body.
+        let field = |ops: Value| {
+            field_of(&call(
+                "history.apply",
+                &json!({"doc": null, "ops": ops}).to_string(),
+            ))
+        };
+        assert_eq!(field(json!([{"clear": {}}])), "ops[0].clear.keepPinned");
+        assert_eq!(
+            field(json!([{"clear": {"keepPinned": true, "x": 1}}])),
+            "ops[0].clear.x"
+        );
+        assert_eq!(field(json!([{"clear": true}])), "ops[0].clear");
+    }
+
+    #[test]
+    fn pinned_over_the_cap_is_refused_at_the_operation_that_does_it() {
+        // Pinned entries are never evicted, so the one operation that would
+        // put them alone over 4 MiB is refused by its index; the operations
+        // before it are not blocked (the caller drops only ops[i]).
+        let big = |id: &str, ts: u64| {
+            let mut e = date_entry(id, ts, "2026-11-19");
+            for key in [
+                "calculatorLabel",
+                "inputsText",
+                "resultText",
+                "expressionText",
+            ] {
+                e[key] = json!("中".repeat(TEXT_MAX));
+            }
+            e["copyText"] = json!("中".repeat(COPY_TEXT_MAX));
+            e["pinned"] = json!(true);
+            e
+        };
+        let mut list = Vec::new();
+        for i in 0..150u64 {
+            list.push(big(&format!("h-{}-1", i + 1), i + 1));
+        }
+        let base = doc(list);
+        assert!(base.to_string().len() < HISTORY_WRITE_CAP);
+        let extra: Vec<Value> = (0..20u64)
+            .map(|i| big(&format!("h-{}-2", i + 1000), i + 1000))
+            .collect();
+        let req = json!({"doc": base, "ops": [{"add": date_entry("h-5000-0", 5000, "2026-01-01")}, {"import": extra}]});
+        assert_eq!(field_of(&call("history.apply", &req.to_string())), "ops[1]");
+        // Without the offender the add is written.
+        let r = apply(
+            base.clone(),
+            json!([{"add": date_entry("h-5000-0", 5000, "2026-01-01")}]),
+        );
+        assert_eq!(r["added"], 1);
+        // A note on a pinned entry that tips it over is refused the same way;
+        // unpinning to make room is not.
+        let mut near: Vec<Value> = (0..166u64)
+            .map(|i| big(&format!("h-{}-1", i + 1), i + 1))
+            .collect();
+        let size = |list: &Vec<Value>| doc(list.clone()).to_string().len();
+        while size(&near) > HISTORY_WRITE_CAP {
+            near.pop();
+        }
+        // Notes on the other entries bring the document within 300-597
+        // bytes of the cap; a 200-character note (598 bytes) then tips it.
+        for j in 1..near.len() {
+            let gap = HISTORY_WRITE_CAP - size(&near);
+            if gap <= 597 {
+                break;
+            }
+            let k = ((gap - 298) / 3).min(NOTE_MAX);
+            near[j]["note"] = json!("中".repeat(k));
+        }
+        let gap = HISTORY_WRITE_CAP - size(&near);
+        assert!((298..=597).contains(&gap), "{gap}");
+        let near = doc(near);
+        let long = "中".repeat(NOTE_MAX);
+        let tip = json!({"doc": near, "ops": [{"note": {"id": "h-1-1", "note": long}}]});
+        assert_eq!(field_of(&call("history.apply", &tip.to_string())), "ops[0]");
+        // Unpinning another entry first makes room (it may be evicted).
+        let room = apply(
+            near.clone(),
+            json!([{"pin": {"id": "h-2-1", "pinned": false}}, {"note": {"id": "h-1-1", "note": long}}]),
+        );
+        assert_eq!(
+            room["doc"]["entries"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|e| e["id"] == "h-1-1")
+                .unwrap()["note"],
+            json!(long)
+        );
+    }
+
+    #[test]
+    fn import_counts_near_duplicates_and_still_imports_them() {
+        let here = date_entry("h-1000-1", 1000, "2026-11-19");
+        let base = doc(vec![here.clone()]);
+        let mut near = here.clone();
+        near["id"] = json!("h-1900-7");
+        near["timestampMs"] = json!(1900);
+        let mut far = here.clone();
+        far["id"] = json!("h-3000-7");
+        far["timestampMs"] = json!(3000);
+        let mut other = date_entry("h-1500-7", 1500, "2026-11-20");
+        other["timestampMs"] = json!(1500);
+        let r = apply(base, json!([{"import": [near, far, other, here]}]));
+        assert_eq!(
+            (
+                r["added"].as_u64(),
+                r["duplicates"].as_u64(),
+                r["nearDuplicates"].as_u64()
+            ),
+            (Some(3), Some(1), Some(1))
+        );
     }
 
     fn export_file(entries: Vec<Value>) -> Value {
