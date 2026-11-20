@@ -44,7 +44,7 @@ It ships as a **phone-first PWA** on GitHub Pages and a **Windows desktop app** 
 | Designed, not started | **M3b:** notes (headline + up to 100k words or unlimited), auto-save history, the countdown upgrade and the UX roadmap items ([7-](Documentation/specs/7-%20M3B_NOTES_AUTOSAVE_COUNTDOWNS.md)) |
 | Not started | M5a (decimal engine) → M5b Standard → M5b+ Mini Calculator → M5c Scientific → M6 Programmer → M7 Converters → M8 Graphing → M9a Languages → M9b Themes → M9 hardening → M10 release |
 | GitHub Pages | **Not enabled** for this repo. Enabling it is an owner decision, needed at M10 |
-| Manual checks still owed | Safari/iOS 16.4+, Firefox, real phones, a screen reader. Everything so far is verified in Chromium (headless Edge) and WebView2 only |
+| Manual checks still owed | Safari/iOS 16.4+, Firefox, real phones, a screen reader. Everything so far is verified in Chromium (headless Edge) and WebView2 only. From M3 and its review (E-12), on an iPhone home-screen app: after a ± tap the field keeps focus, the keypad stays up and the caret stays by the same digit; Export opens the share sheet (or the download works), Copy export works, and if both fail the export text is shown selected; the Undo bar at the bottom of the History sheet is reachable with a thumb |
 
 ## 3. Exact next steps
 
